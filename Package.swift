@@ -1,4 +1,8 @@
 // swift-tools-version: 6.0
+// Run tests with: swift run ClaudeMonTests
+// (XCTest/Testing aren't resolvable on pure CommandLineTools; the test
+//  harness is an executable target, not a .testTarget. Switch to
+//  .testTarget when Xcode is installed.)
 import PackageDescription
 
 let package = Package(
