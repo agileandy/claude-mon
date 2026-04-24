@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ClaudeMonKit
 
 @main
 struct ClaudeMonApp: App {

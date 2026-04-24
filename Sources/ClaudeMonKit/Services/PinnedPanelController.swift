@@ -2,13 +2,13 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class PinnedPanelController: NSObject, NSWindowDelegate {
-    static let shared = PinnedPanelController()
+public final class PinnedPanelController: NSObject, NSWindowDelegate {
+    public static let shared = PinnedPanelController()
 
     private var panel: NSPanel?
     private weak var state: AppState?
 
-    func show(with state: AppState) {
+    public func show(with state: AppState) {
         self.state = state
 
         if let panel {
@@ -37,13 +37,13 @@ final class PinnedPanelController: NSObject, NSWindowDelegate {
         self.panel = panel
     }
 
-    func hide() {
+    public func hide() {
         panel?.orderOut(nil)
     }
 
     // MARK: - NSWindowDelegate
 
-    nonisolated func windowWillClose(_ notification: Notification) {
+    nonisolated public func windowWillClose(_ notification: Notification) {
         Task { @MainActor in
             self.state?.isPinned = false
         }

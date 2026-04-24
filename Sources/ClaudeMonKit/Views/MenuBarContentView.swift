@@ -1,9 +1,11 @@
 import SwiftUI
 
-struct MenuBarContentView: View {
+public struct MenuBarContentView: View {
     @Environment(AppState.self) private var state
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         @Bindable var s = state
         VStack(spacing: 0) {
             headerRow

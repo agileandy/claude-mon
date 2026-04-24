@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 @Observable
-final class AppState {
+public final class AppState {
     // MARK: - Data
 
     var allEntries: [UsageEntry] = []
@@ -24,7 +24,7 @@ final class AppState {
     var lastRefreshed: Date?
     var lastError: String?
     var countdownSeconds: Double = 0
-    var isPinned: Bool = false {
+    public var isPinned: Bool = false {
         didSet {
             guard oldValue != isPinned else { return }
             if isPinned {
@@ -102,7 +102,7 @@ final class AppState {
     private let reader = JournalReader()
     private var refreshTask: Task<Void, Never>?
 
-    init() {
+    public init() {
         start()
     }
 
@@ -210,7 +210,7 @@ final class AppState {
         return min(100, weekTotals.cost / weeklyBudget * 100)
     }
 
-    var menuBarLabel: String {
+    public var menuBarLabel: String {
         switch menuBarMode {
         case .cost:
             let cost = todayTotals.cost
@@ -222,7 +222,7 @@ final class AppState {
         }
     }
 
-    var menuBarColor: Color {
+    public var menuBarColor: Color {
         quotaColor(blockCostPercent)
     }
 }
