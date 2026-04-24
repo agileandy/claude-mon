@@ -3,6 +3,7 @@ import Foundation
 
 // Minimal assert-based test harness.
 // Exits 0 if all pass; exits 1 with a summary if any fail.
+// Run with: `swift run ClaudeMonTests`
 // Replace with swift-testing / XCTest when Xcode is available on the machine.
 
 @MainActor
@@ -61,23 +62,19 @@ func run() -> Int32 {
     let r = Runner()
 
     print("Smoke ———————————————————————————————")
+    runSmokeSuite(r)
 
-    r.test("modelPricing_knownRates") {
-        try expectEqual(ModelPricing.rate(for: "claude-opus-4").inputPerM, 15)
-        try expectEqual(ModelPricing.rate(for: "claude-sonnet-4").inputPerM, 3)
-        try expectEqual(ModelPricing.rate(for: "claude-haiku-4").inputPerM, 0.25)
-    }
+    print("\nBurnRateEstimator ———————————————————")
+    runBurnRateEstimatorSuite(r)
 
-    r.test("usageEntry_displayModel_stripsVersions") {
-        let e = UsageEntry(
-            id: "m1",
-            timestamp: Date(),
-            sessionId: "s1",
-            model: "claude-3-5-sonnet-20241022",
-            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0
-        )
-        try expectEqual(e.displayModel, "Sonnet")
-    }
+    print("\nSessionBlock ————————————————————————")
+    runSessionBlockSuite(r)
+
+    print("\nRiskTier ————————————————————————————")
+    runRiskTierSuite(r)
+
+    print("\nWeeklyForecast ——————————————————————")
+    runWeeklyForecastSuite(r)
 
     return r.report()
 }

@@ -129,6 +129,25 @@ struct CurrentBlockView: View {
 
             predictionRow("End-of-block",
                           value: formatCost(block.projectedCost))
+
+            if let caveat = confidenceCaveat(block.projectionConfidence) {
+                HStack(spacing: 4) {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                    Text(caveat)
+                        .font(.caption2)
+                }
+                .foregroundStyle(.tertiary)
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    private func confidenceCaveat(_ c: BurnRateEstimator.Confidence) -> String? {
+        switch c {
+        case .high:   return nil
+        case .medium: return "Estimate — pace may vary."
+        case .low:    return "Low confidence — pace too variable to project."
         }
     }
 
@@ -178,6 +197,7 @@ struct CurrentBlockView: View {
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
+                forecastLine
             }
             Divider()
             PeriodAccordionRow(label: "This month", totals: state.monthTotals)
@@ -185,6 +205,46 @@ struct CurrentBlockView: View {
         .padding(12)
         .background(Color.secondary.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private var forecastLine: some View {
+        let f = state.weeklyForecast
+        switch f.outcome {
+        case .reachesCap(let hitDate, let days):
+            HStack {
+                Text("At pace")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("hits budget \(shortDate(hitDate))  (\(daysPhrase(days)))")
+                    .font(.caption2)
+                    .foregroundStyle(days < 3 ? .orange : .secondary)
+                    .monospacedDigit()
+            }
+        case .alreadyExceeded:
+            HStack {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption2)
+                Text("Over budget — ease off")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.orange)
+        case .staysUnder, .unavailable:
+            EmptyView()
+        }
+    }
+
+    private func shortDate(_ d: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "EEE d MMM"
+        return df.string(from: d)
+    }
+
+    private func daysPhrase(_ days: Double) -> String {
+        if days < 1 { return "today" }
+        if days < 2 { return "tomorrow" }
+        return "\(Int(days.rounded()))d"
     }
 
     @ViewBuilder

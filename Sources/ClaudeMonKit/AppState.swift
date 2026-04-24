@@ -188,13 +188,11 @@ public final class AppState {
 
     var blockRisk: RiskTier {
         guard let block = activeBlock else { return .onTrack }
-        let ratio = block.projectedCost / max(0.01, effectiveCostPerBlock)
-        switch ratio {
-        case ..<0.80:  return .onTrack
-        case ..<0.95:  return .watch
-        case ..<1.05:  return .atRisk
-        default:       return .overrun
-        }
+        return RiskTier.evaluate(
+            projectedCost: block.projectedCost,
+            costLimit: effectiveCostPerBlock,
+            confidence: block.projectionConfidence
+        )
     }
 
     /// Week-over-week cost delta: positive = spent more than previous 7d.
@@ -208,6 +206,17 @@ public final class AppState {
     var weeklyBudgetPercent: Double {
         guard weeklyBudget > 0 else { return 0 }
         return min(100, weekTotals.cost / weeklyBudget * 100)
+    }
+
+    /// Multi-day forecast: at current median daily burn, when would the rolling-7d
+    /// total reach the weekly budget? See WeeklyForecast.compute.
+    var weeklyForecast: WeeklyForecast {
+        WeeklyForecast.compute(
+            entries: allEntries,
+            weekTotalsCost: weekTotals.cost,
+            weeklyBudget: weeklyBudget,
+            now: Date()
+        )
     }
 
     public var menuBarLabel: String {
@@ -243,26 +252,47 @@ enum HistoryGraphMode: String, CaseIterable, Identifiable {
 }
 
 enum RiskTier {
-    case onTrack   // projected < 80%
-    case watch     // 80-95%
-    case atRisk    // 95-105%
-    case overrun   // > 105%
+    case onTrack        // projected < 80%
+    case watch          // 80-95%
+    case atRisk         // 95-105%
+    case overrun        // > 105%
+    case indeterminate  // projection confidence too low to render a tier
 
     var label: String {
         switch self {
-        case .onTrack: return "On track"
-        case .watch:   return "Watch"
-        case .atRisk:  return "At risk"
-        case .overrun: return "Overrun"
+        case .onTrack:       return "On track"
+        case .watch:         return "Watch"
+        case .atRisk:        return "At risk"
+        case .overrun:       return "Overrun"
+        case .indeterminate: return "—"
         }
     }
 
     var color: Color {
         switch self {
-        case .onTrack: return .green
-        case .watch:   return .yellow
-        case .atRisk:  return .orange
-        case .overrun: return .red
+        case .onTrack:       return .green
+        case .watch:         return .yellow
+        case .atRisk:        return .orange
+        case .overrun:       return .red
+        case .indeterminate: return .secondary
+        }
+    }
+
+    /// Pure function so the gating logic is testable without constructing AppState.
+    /// Returns `.indeterminate` when projection confidence is `.low` — avoids painting a
+    /// risk colour over a number the estimator itself doesn't trust.
+    static func evaluate(
+        projectedCost: Double,
+        costLimit: Double,
+        confidence: BurnRateEstimator.Confidence
+    ) -> RiskTier {
+        guard confidence != .low else { return .indeterminate }
+        let ratio = projectedCost / max(0.01, costLimit)
+        switch ratio {
+        case ..<0.80:  return .onTrack
+        case ..<0.95:  return .watch
+        case ..<1.05:  return .atRisk
+        default:       return .overrun
         }
     }
 }

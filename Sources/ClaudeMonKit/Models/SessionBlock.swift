@@ -22,6 +22,7 @@ struct SessionBlock: Identifiable, Sendable {
     let burnRateTokensPerHour: Double
     let projectedCost: Double
     let projectedTokens: Int
+    let projectionConfidence: BurnRateEstimator.Confidence
 }
 
 extension SessionBlock {
@@ -59,8 +60,15 @@ extension SessionBlock {
 
         let elapsedH = max(0.001, now.timeIntervalSince(start) / 3600)
         let remaining = blockWindowEnd.timeIntervalSince(now)
-        let burnCost  = active ? totalCostActual / elapsedH : 0
-        let burnTok   = active ? Double(totalTok) / elapsedH : 0
+
+        // Windowed median-based burn rate (see BurnRateEstimator). The prior implementation
+        // averaged cost over the entire elapsed block window, so a spike in the first
+        // 15 minutes dominated the projection for the remaining ~4h45m.
+        let buckets = BurnRateEstimator.bucketize(entries: sorted, from: start, to: now)
+        let estimate = BurnRateEstimator.estimate(buckets: buckets)
+
+        let burnCost  = active ? estimate.costPerHour : 0
+        let burnTok   = active ? estimate.tokensPerHour : 0
         let projCost  = active && remaining > 0 ? totalCostActual + burnCost * (remaining / 3600) : totalCostActual
         let projTok   = active && remaining > 0 ? totalTok + Int(burnTok * (remaining / 3600)) : totalTok
 
@@ -82,7 +90,8 @@ extension SessionBlock {
             burnRateCostPerHour: burnCost,
             burnRateTokensPerHour: burnTok,
             projectedCost: projCost,
-            projectedTokens: projTok
+            projectedTokens: projTok,
+            projectionConfidence: active ? estimate.confidence : .low
         )
     }
 }
