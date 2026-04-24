@@ -82,6 +82,15 @@ func run() -> Int32 {
     print("\nLiveRateLimit ———————————————————————")
     runLiveRateLimitSuite(r)
 
+    print("\nAlertCenter —————————————————————————")
+    runAlertCenterSuite(r)
+
+    print("\nAlertCenter (spike) —————————————————")
+    runAlertCenterSpikeSuite(r)
+
+    print("\nAlertCenter (digest) ————————————————")
+    runAlertCenterDigestSuite(r)
+
     return r.report()
 }
 

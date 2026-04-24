@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import UserNotifications
 
 @MainActor
 @Observable
@@ -20,6 +21,15 @@ public final class AppState {
     /// Server-sourced rate-limit snapshot from Claude Code's statusline. `nil` when the
     /// user hasn't installed the tee snippet, or hasn't made an API call this session.
     var liveRateLimit: LiveRateLimit?
+
+    /// UNUserNotificationCenter authorization state. `nil` until we've checked.
+    /// The Alerts section in Settings surfaces this + a grant-permission button.
+    var notificationAuth: UNAuthorizationStatus?
+
+    /// False when the binary isn't a `.app` bundle — UN is unavailable and every
+    /// notification call is a no-op. Exposed so the UI can render a clear "bundle
+    /// me first" hint instead of showing a grant button that silently fails.
+    var notificationsAvailable: Bool { alertCenter.notificationsAvailable }
 
     // MARK: - UI State
 
@@ -94,6 +104,37 @@ public final class AppState {
         set { UserDefaults.standard.set(newValue, forKey: "weeklyBudget") }
     }
 
+    /// Master on/off for threshold + spike + digest alerts. Defaults to true; user
+    /// can toggle in Settings.
+    var alertsEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "alertsEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "alertsEnabled") }
+    }
+
+    /// When true (default), suppress alerts that would be derived from the local
+    /// message-count estimate. Estimate drifts ~2× from the live server number — it's
+    /// decorative, not actionable. User can opt-in to "alert from estimate too" if
+    /// they're on a machine without the statusline tee installed.
+    var onlyAlertOnLiveData: Bool {
+        get { UserDefaults.standard.object(forKey: "onlyAlertOnLiveData") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "onlyAlertOnLiveData") }
+    }
+
+    /// End-of-day digest enabled. Defaults to true; digest fires once per day at
+    /// `digestHour:digestMinute` local time as long as alerts are enabled.
+    var digestEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "digestEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "digestEnabled") }
+    }
+    var digestHour: Int {
+        get { (UserDefaults.standard.object(forKey: "digestHour") as? Int) ?? 18 }
+        set { UserDefaults.standard.set(newValue, forKey: "digestHour") }
+    }
+    var digestMinute: Int {
+        get { (UserDefaults.standard.object(forKey: "digestMinute") as? Int) ?? 0 }
+        set { UserDefaults.standard.set(newValue, forKey: "digestMinute") }
+    }
+
     var plan: PlanLimits { planType.limits }
 
     /// Effective block cost limit honoring the user override, else the plan default.
@@ -105,10 +146,49 @@ public final class AppState {
 
     private let reader = JournalReader()
     private let liveStore = LiveRateLimitStore()
+    private let alertCenter = AlertCenter.shared
     private var refreshTask: Task<Void, Never>?
+
+    /// Alert IDs we've already delivered for the current (and recent) block(s). Keyed
+    /// by stable `threshold:<blockStart>:<percent>` so re-entering a block after
+    /// relaunch doesn't re-fire. Persisted to UserDefaults; filtered to current-block
+    /// prefix whenever a new block starts to keep the set bounded.
+    private var firedAlertIds: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "firedAlertIds") ?? [])
 
     public init() {
         start()
+        Task { await self.refreshNotificationAuth() }
+    }
+
+    // MARK: - Alerts (WS-2 foundation)
+
+    /// Check the current permission state without prompting. Writes to `notificationAuth`.
+    func refreshNotificationAuth() async {
+        notificationAuth = await alertCenter.authorizationStatus()
+    }
+
+    /// Prompt the user for notification permission. Safe to call more than once — the
+    /// system shows the dialog only the first time.
+    func requestNotificationAuth() async {
+        _ = await alertCenter.requestAuthorization()
+        await refreshNotificationAuth()
+    }
+
+    /// Manual end-to-end verification: fires one alert so the user can confirm the
+    /// OS permission + delivery chain is working. Wired to the "Test alert" button
+    /// in Settings.
+    func fireTestAlert() async {
+        let now = Date()
+        let df = DateFormatter()
+        df.timeStyle = .medium
+        await alertCenter.deliver(Alert(
+            id: "test:\(Int(now.timeIntervalSince1970))",
+            category: .test,
+            title: "claude-mon test alert",
+            body: "Delivered at \(df.string(from: now)). Threshold alerts will use the same channel.",
+            createdAt: now
+        ))
     }
 
     // MARK: - Lifecycle
@@ -155,9 +235,110 @@ public final class AppState {
             prevWeekTotals  = bundle.prevWeek
             monthTotals     = bundle.month
             lastError       = nil
+
+            await evaluateAndFireAlerts()
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    // MARK: - Alert evaluation (WS-2.2)
+
+    /// Runs after each successful refresh. Builds an `AlertCenter.Input` from the
+    /// current state, asks the pure evaluator which alerts to fire, delivers each one,
+    /// and persists the fired IDs so we don't re-fire on the next poll.
+    private func evaluateAndFireAlerts() async {
+        let sourceForAlerts: AlertCenter.Input.RateLimitSource =
+            blockRateLimitSource == .live ? .live : .estimate
+
+        let input = AlertCenter.Input(
+            now: Date(),
+            blockStartTime: activeBlock?.startTime,
+            blockRateLimitPercent: blockRateLimitPercent,
+            rateLimitSource: sourceForAlerts,
+            alreadyFiredKeys: firedAlertIds,
+            alertsEnabled: alertsEnabled,
+            onlyAlertOnLiveData: onlyAlertOnLiveData,
+            recentBurnBuckets: recentBurnBucketsForSpike(),
+            digest: digestContext(),
+            calendar: .current
+        )
+
+        let alerts = AlertCenter.evaluate(input: input)
+        guard !alerts.isEmpty else {
+            pruneFiredAlertIdsForCurrentBlock()
+            return
+        }
+
+        for alert in alerts {
+            await alertCenter.deliver(alert)
+            firedAlertIds.insert(alert.id)
+        }
+        pruneFiredAlertIdsForCurrentBlock()
+        saveFiredAlertIds()
+    }
+
+    /// Keep the set bounded: retain only per-block keys that match the current block.
+    /// Thresholds are `threshold:<epoch>:<pct>`; spikes are `spike:<epoch>`. Any key
+    /// whose `<epoch>` doesn't match the current block's startTime gets dropped. Other
+    /// categories (digest, WS2.4) are preserved as-is — they handle their own lifecycle.
+    private func pruneFiredAlertIdsForCurrentBlock() {
+        guard let blockStart = activeBlock?.startTime else { return }
+        let currentBlockEpoch = "\(Int(blockStart.timeIntervalSince1970))"
+        let before = firedAlertIds.count
+        firedAlertIds = firedAlertIds.filter { key in
+            let parts = key.split(separator: ":")
+            switch parts.first {
+            case "threshold", "spike":
+                return parts.count >= 2 && parts[1] == currentBlockEpoch
+            default:
+                return true
+            }
+        }
+        if firedAlertIds.count != before {
+            saveFiredAlertIds()
+        }
+    }
+
+    private func saveFiredAlertIds() {
+        UserDefaults.standard.set(Array(firedAlertIds), forKey: "firedAlertIds")
+    }
+
+    /// Snapshot of today's usage for the daily digest body. Pulls the dominant model
+    /// (by cost) from `todayTotals` and computes today-vs-yesterday % from the last-7
+    /// daily history. Returns a disabled `Digest` when `digestEnabled` is off.
+    private func digestContext() -> AlertCenter.Input.Digest {
+        guard digestEnabled else { return AlertCenter.Input.Digest() }
+        let today = Calendar.current.startOfDay(for: Date())
+        let yesterdayCost = dailyHistory
+            .first { Calendar.current.startOfDay(for: $0.date) ==
+                     Calendar.current.date(byAdding: .day, value: -1, to: today) }
+            .map { $0.totalCost }
+        let pct: Double? = {
+            guard let y = yesterdayCost, y > 0.01 else { return nil }
+            return (todayTotals.cost - y) / y * 100
+        }()
+        return AlertCenter.Input.Digest(
+            enabled: true,
+            hour: digestHour,
+            minute: digestMinute,
+            todayCost: todayTotals.cost,
+            topModel: todayTotals.modelBreakdown.first?.model,
+            percentChangeVsYesterday: pct
+        )
+    }
+
+    /// Last hour of 5-min buckets within the active block, used by the spike detector.
+    /// Empty when there's no active block or the block is younger than one complete bucket.
+    private func recentBurnBucketsForSpike() -> [BurnRateEstimator.Bucket] {
+        guard let block = activeBlock else { return [] }
+        let now = Date()
+        let hourAgo = now.addingTimeInterval(-3600)
+        let bucketStart = max(block.startTime, hourAgo)
+        let entries = allEntries.filter {
+            $0.timestamp >= bucketStart && $0.timestamp < now
+        }
+        return BurnRateEstimator.bucketize(entries: entries, from: bucketStart, to: now)
     }
 
     // MARK: - Derived helpers
