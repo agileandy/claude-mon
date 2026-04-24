@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+# Package.resolved is intentionally committed — apps want reproducible deps.
+
+# Xcode (in case someone generates a project later)
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+build/
+*.app/
+xcuserdata/
+*.xcuserstate
+
+# Local Claude Code settings (user-specific overrides)
+.claude/settings.local.json
+
+# Logs & scratch
+*.log
+*.tmp
