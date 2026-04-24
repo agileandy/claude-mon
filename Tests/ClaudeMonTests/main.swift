@@ -76,6 +76,12 @@ func run() -> Int32 {
     print("\nWeeklyForecast ——————————————————————")
     runWeeklyForecastSuite(r)
 
+    print("\nQuotaPercent ————————————————————————")
+    runQuotaPercentSuite(r)
+
+    print("\nLiveRateLimit ———————————————————————")
+    runLiveRateLimitSuite(r)
+
     return r.report()
 }
 

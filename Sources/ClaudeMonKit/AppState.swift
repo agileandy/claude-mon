@@ -17,6 +17,10 @@ public final class AppState {
     var prevWeekTotals: PeriodTotals = PeriodTotals()   // rolling 7d ending 7d ago
     var monthTotals: PeriodTotals    = PeriodTotals()
 
+    /// Server-sourced rate-limit snapshot from Claude Code's statusline. `nil` when the
+    /// user hasn't installed the tee snippet, or hasn't made an API call this session.
+    var liveRateLimit: LiveRateLimit?
+
     // MARK: - UI State
 
     var selectedTab: Int = 0
@@ -100,6 +104,7 @@ public final class AppState {
     // MARK: - Private
 
     private let reader = JournalReader()
+    private let liveStore = LiveRateLimitStore()
     private var refreshTask: Task<Void, Never>?
 
     public init() {
@@ -135,7 +140,11 @@ public final class AppState {
 
         do {
             // All parsing + aggregation runs on the JournalReader actor, not on MainActor.
-            let bundle = try await reader.loadBundle(since: usageStartDate)
+            async let bundleTask = reader.loadBundle(since: usageStartDate)
+            async let liveTask   = liveStore.load()
+
+            let bundle = try await bundleTask
+            liveRateLimit   = await liveTask
 
             allEntries      = bundle.entries
             sessionBlocks   = bundle.blocks
@@ -156,6 +165,42 @@ public final class AppState {
     var blockCostPercent: Double {
         guard let block = activeBlock, effectiveCostPerBlock > 0 else { return 0 }
         return min(100, block.totalCost / effectiveCostPerBlock * 100)
+    }
+
+    enum RateLimitSource: Equatable {
+        /// Authoritative % from Anthropic, captured by the statusline tee within the
+        /// freshness window and before the 5h window reset.
+        case live
+        /// Local estimate: `messageCount / plan.messagesPerBlock`. Token-weighted
+        /// server-side quota doesn't fit this model cleanly — drift is expected.
+        case estimate
+    }
+
+    /// The rate-limit percentage the UI should show. Prefers the live value from
+    /// Claude Code's statusline tee when fresh; falls back to a local estimate based
+    /// on message count vs plan cap. Check `blockRateLimitSource` to know which.
+    var blockRateLimitPercent: Double {
+        if let live = liveRateLimit, live.freshness() == .fresh {
+            return live.fiveHour.usedPercentage
+        }
+        guard let block = activeBlock, plan.messagesPerBlock > 0 else { return 0 }
+        return min(100, Double(block.messageCount) / Double(plan.messagesPerBlock) * 100)
+    }
+
+    var blockRateLimitSource: RateLimitSource {
+        if let live = liveRateLimit, live.freshness() == .fresh { return .live }
+        return .estimate
+    }
+
+    /// When the live data is available, prefer its `resetsAt` for the time-remaining
+    /// clock — it reflects Anthropic's actual 5h rolling window, not our synthesised
+    /// "5h from first message" heuristic.
+    var blockResetsAt: Date? {
+        if let live = liveRateLimit, live.freshness() == .fresh {
+            return live.fiveHour.resetsAt
+        }
+        guard let block = activeBlock else { return nil }
+        return block.startTime.addingTimeInterval(5 * 3600)
     }
 
     // MARK: - Predictions (current block, cost-based)
@@ -227,12 +272,12 @@ public final class AppState {
         case .tokens:
             return formatCompact(todayTotals.tokens)
         case .blockPercent:
-            return String(format: "%.0f%%", blockCostPercent)
+            return String(format: "%.0f%%", blockRateLimitPercent)
         }
     }
 
     public var menuBarColor: Color {
-        quotaColor(blockCostPercent)
+        quotaColor(blockRateLimitPercent)
     }
 }
 

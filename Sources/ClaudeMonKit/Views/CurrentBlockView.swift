@@ -31,20 +31,20 @@ struct CurrentBlockView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if block.remainingSeconds > 0 {
-                    Label(formatDuration(block.remainingSeconds) + " left", systemImage: "clock")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if let resetsAt = state.blockResetsAt {
+                    let remaining = resetsAt.timeIntervalSinceNow
+                    if remaining > 0 {
+                        Label(formatDuration(remaining) + " left", systemImage: "clock")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
-            // Cost quota bar
-            quotaRow(
-                label: "Cost",
-                used: formatCost(block.totalCost),
-                limit: formatCost(state.effectiveCostPerBlock),
-                percent: state.blockCostPercent
-            )
+            // Block quota row: shows the rate-limit % (live from Claude when available,
+            // estimate from local message-count as fallback), plus raw message fraction
+            // and $-value burned this block (informational only).
+            blockQuotaRow(block: block)
 
             // Token breakdown (no limit — Claude console doesn't track tokens)
             HStack(spacing: 12) {
@@ -283,6 +283,52 @@ struct CurrentBlockView: View {
     }
 
     // MARK: - Helpers
+
+    private func blockQuotaRow(block: SessionBlock) -> some View {
+        let pct = state.blockRateLimitPercent
+        let isLive = state.blockRateLimitSource == .live
+
+        return VStack(alignment: .leading, spacing: 6) {
+            // Headline: the rate-limit %. When live, this matches Claude's console
+            // exactly. When estimated (statusline tee missing or stale), it's a
+            // message-count approximation and we label it with "(est.)" so the user
+            // knows not to treat it as authoritative.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Block")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !isLive {
+                    Text("(est.)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Text(String(format: "%.0f%%", pct))
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(quotaColor(pct))
+                    .monospacedDigit()
+            }
+
+            QuotaBar(percent: pct)
+                .frame(height: 6)
+
+            // Sub-line: local context — message count seen by this machine + $-value.
+            // Both are informational when we're using the live %; they're the basis of
+            // the estimate when we're not.
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(formatTokensFull(block.messageCount)) / \(formatTokensFull(state.plan.messagesPerBlock)) msg")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Spacer()
+                Text("\(formatCost(block.totalCost)) value")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+        }
+    }
 
     private func quotaRow(label: String, used: String, limit: String, percent: Double) -> some View {
         VStack(alignment: .leading, spacing: 4) {
