@@ -122,6 +122,9 @@ func run() async -> Int32 {
     print("\nUsageAggregator —————————————————————")
     runUsageAggregatorSuite(r)
 
+    print("\nSessionAnalyzer —————————————————————")
+    runSessionAnalyzerSuite(r)
+
     return r.report()
 }
 
