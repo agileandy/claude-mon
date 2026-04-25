@@ -175,15 +175,15 @@ struct CurrentBlockView: View {
 
     private var periodTotalsSection: some View {
         VStack(spacing: 8) {
-            PeriodAccordionRow(label: "Today", totals: state.todayTotals)
+            PeriodAccordionRow(label: "Today", totals: state.displayedTodayTotals)
             Divider()
             PeriodAccordionRow(
                 label: "Rolling 7d",
-                totals: state.weekTotals,
+                totals: state.displayedWeekTotals,
                 trailing: AnyView(weekTrailing),
                 subhead: AnyView(weekDeltaBadge)
             ) {
-                if state.weeklyBudget > 0 {
+                if state.weeklyBudget > 0 && state.selectedProjectFilter == nil {
                     QuotaBar(percent: state.weeklyBudgetPercent)
                         .padding(.vertical, 2)
                 }
@@ -192,15 +192,17 @@ struct CurrentBlockView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(formatCost(state.prevWeekTotals.cost))
+                    Text(formatCost(state.displayedPrevWeekTotals.cost))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
-                forecastLine
+                if state.selectedProjectFilter == nil {
+                    forecastLine
+                }
             }
             Divider()
-            PeriodAccordionRow(label: "This month", totals: state.monthTotals)
+            PeriodAccordionRow(label: "This month", totals: state.displayedMonthTotals)
         }
         .padding(12)
         .background(Color.secondary.opacity(0.07))

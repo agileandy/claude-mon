@@ -9,6 +9,9 @@ public struct MenuBarContentView: View {
         @Bindable var s = state
         VStack(spacing: 0) {
             headerRow
+            if state.selectedProjectFilter != nil {
+                filterBanner
+            }
             Divider()
             tabPicker(selected: $s.selectedTab)
             Divider()
@@ -17,7 +20,8 @@ public struct MenuBarContentView: View {
                 switch state.selectedTab {
                 case 0: CurrentBlockView()
                 case 1: historyTab
-                case 2: SettingsView()
+                case 2: ProjectsTabView()
+                case 3: SettingsView()
                 default: CurrentBlockView()
                 }
             }
@@ -64,6 +68,36 @@ public struct MenuBarContentView: View {
         .padding(.vertical, 8)
     }
 
+    // MARK: - Filter banner
+
+    /// Shown under the header when a project filter is active. Reminds the user that
+    /// most of what they see is scoped — and that the rate-limit gauge stays global.
+    private var filterBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                .font(.caption2)
+                .foregroundStyle(Color.accentColor)
+            Text("Filtered: \(state.selectedProjectDisplay ?? "?")")
+                .font(.caption2)
+                .lineLimit(1)
+            Spacer()
+            Text("rate limit is global")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Button {
+                state.selectedProjectFilter = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(Color.accentColor.opacity(0.10))
+    }
+
     // MARK: - History tab (chart + session list)
 
     private var historyTab: some View {
@@ -82,6 +116,7 @@ public struct MenuBarContentView: View {
         let tabs: [(String, String)] = [
             ("Now",      "bolt.fill"),
             ("History",  "chart.bar.fill"),
+            ("Projects", "folder.fill"),
             ("Settings", "gearshape")
         ]
         return HStack(spacing: 0) {

@@ -7,7 +7,7 @@ struct HistoryChartView: View {
     private var mode: HistoryGraphMode { state.historyGraphMode }
 
     private var blocks: [SessionBlock] {
-        Array(state.sessionBlocks.suffix(20))
+        Array(state.displayedSessionBlocks.suffix(20))
     }
 
     private func value(_ block: SessionBlock) -> Double {

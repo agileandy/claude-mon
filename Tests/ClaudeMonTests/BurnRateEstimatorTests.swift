@@ -98,6 +98,7 @@ private func entry(id: String, at timestamp: Date, cost: Double) -> UsageEntry {
         inputTokens: inputTokens,
         outputTokens: 0,
         cacheCreationTokens: 0,
-        cacheReadTokens: 0
+        cacheReadTokens: 0,
+        projectDir: "-test"
     )
 }

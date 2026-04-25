@@ -4,7 +4,7 @@ struct SessionListView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        let past = state.sessionBlocks.reversed().prefix(20)
+        let past = state.displayedSessionBlocks.reversed().prefix(20)
 
         if past.isEmpty {
             Text("No sessions yet")

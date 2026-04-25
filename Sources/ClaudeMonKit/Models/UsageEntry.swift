@@ -9,6 +9,11 @@ struct UsageEntry: Identifiable, Hashable, Sendable {
     let outputTokens: Int
     let cacheCreationTokens: Int
     let cacheReadTokens: Int
+    /// The munged journal directory name (e.g. `-Users-andy-Dev-foo`). Acts as the
+    /// stable per-project key for aggregation. Decode to a display name with
+    /// `ProjectName.decode(dirName:)`. Empty string when the entry pre-dates WS-3 or
+    /// the parent dir couldn't be resolved.
+    let projectDir: String
 
     var totalTokens: Int {
         inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens

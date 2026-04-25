@@ -18,6 +18,25 @@ public final class AppState {
     var prevWeekTotals: PeriodTotals = PeriodTotals()   // rolling 7d ending 7d ago
     var monthTotals: PeriodTotals    = PeriodTotals()
 
+    /// Per-project rollups over the rolling 7d window. Sorted by week cost desc.
+    /// Drives the Projects tab and the header filter dropdown.
+    var projectTotals: [ProjectAggregate] = []
+
+    /// Currently-selected project filter (the raw `projectDir` key), or `nil` for "all".
+    /// Affects period totals (today/week/prev/month) and history. Block-level rate-limit
+    /// stuff (activeBlock, blockRateLimitPercent, burn rate, projection) intentionally
+    /// stays GLOBAL — Claude enforces rate limits across all projects, so filtering
+    /// would mislead the user.
+    var selectedProjectFilter: String? = UserDefaults.standard.string(forKey: "selectedProjectFilter") {
+        didSet {
+            if selectedProjectFilter == nil {
+                UserDefaults.standard.removeObject(forKey: "selectedProjectFilter")
+            } else {
+                UserDefaults.standard.set(selectedProjectFilter, forKey: "selectedProjectFilter")
+            }
+        }
+    }
+
     /// Server-sourced rate-limit snapshot from Claude Code's statusline. `nil` when the
     /// user hasn't installed the tee snippet, or hasn't made an API call this session.
     var liveRateLimit: LiveRateLimit?
@@ -234,6 +253,7 @@ public final class AppState {
             weekTotals      = bundle.week
             prevWeekTotals  = bundle.prevWeek
             monthTotals     = bundle.month
+            projectTotals   = bundle.projects
             lastError       = nil
 
             await evaluateAndFireAlerts()
@@ -342,6 +362,45 @@ public final class AppState {
     }
 
     // MARK: - Derived helpers
+
+    // MARK: - Filtered views (WS-3)
+
+    /// Entries narrowed by `selectedProjectFilter`. Same as `allEntries` when no
+    /// filter is set; views should prefer these when rendering project-scoped data.
+    var filteredEntries: [UsageEntry] {
+        guard let dir = selectedProjectFilter else { return allEntries }
+        return allEntries.filter { $0.projectDir == dir }
+    }
+
+    /// Display name for the active filter (best-effort). Used by the header banner.
+    var selectedProjectDisplay: String? {
+        guard let dir = selectedProjectFilter else { return nil }
+        return projectTotals.first(where: { $0.dir == dir })?.displayName
+            ?? ProjectName.decode(dirName: dir).display
+    }
+
+    var displayedTodayTotals: PeriodTotals {
+        selectedProjectFilter == nil ? todayTotals : UsageAggregator.today(from: filteredEntries)
+    }
+    var displayedWeekTotals: PeriodTotals {
+        selectedProjectFilter == nil ? weekTotals : UsageAggregator.thisWeek(from: filteredEntries)
+    }
+    var displayedPrevWeekTotals: PeriodTotals {
+        selectedProjectFilter == nil ? prevWeekTotals : UsageAggregator.previousWeek(from: filteredEntries)
+    }
+    var displayedMonthTotals: PeriodTotals {
+        selectedProjectFilter == nil ? monthTotals : UsageAggregator.thisMonth(from: filteredEntries)
+    }
+    var displayedDailyHistory: [DailyAggregate] {
+        selectedProjectFilter == nil ? dailyHistory : UsageAggregator.last7Days(from: filteredEntries)
+    }
+
+    /// Session blocks scoped to the active filter when one is set. Rebuilt from the
+    /// filtered entries — same 5h-windowing logic, but a block only appears if the
+    /// filtered project contributed messages to it.
+    var displayedSessionBlocks: [SessionBlock] {
+        selectedProjectFilter == nil ? sessionBlocks : SessionAnalyzer.analyze(entries: filteredEntries)
+    }
 
     var blockCostPercent: Double {
         guard let block = activeBlock, effectiveCostPerBlock > 0 else { return 0 }

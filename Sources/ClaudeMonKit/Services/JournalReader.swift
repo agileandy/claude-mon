@@ -30,7 +30,8 @@ actor JournalReader {
             today: UsageAggregator.today(from: entries),
             week: UsageAggregator.thisWeek(from: entries),
             prevWeek: UsageAggregator.previousWeek(from: entries),
-            month: UsageAggregator.thisMonth(from: entries)
+            month: UsageAggregator.thisMonth(from: entries),
+            projects: UsageAggregator.byProject(from: entries, now: now)
         )
     }
 
@@ -45,6 +46,11 @@ actor JournalReader {
         var entries: [UsageEntry] = []
 
         for fileURL in jsonlFiles {
+            // Journal layout: `~/.claude/projects/<munged-project-dir>/<session>.jsonl`.
+            // The parent dir IS the project key; resolve once per file and tag every
+            // entry from that file with it.
+            let projectDir = fileURL.deletingLastPathComponent().lastPathComponent
+
             guard let data = fm.contents(atPath: fileURL.path),
                   let text = String(data: data, encoding: .utf8) else { continue }
 
@@ -70,7 +76,8 @@ actor JournalReader {
                     inputTokens: usage.input_tokens,
                     outputTokens: usage.output_tokens,
                     cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
-                    cacheReadTokens: usage.cache_read_input_tokens ?? 0
+                    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+                    projectDir: projectDir
                 )
                 entries.append(entry)
             }
@@ -144,4 +151,5 @@ struct RefreshBundle: Sendable {
     let week: PeriodTotals
     let prevWeek: PeriodTotals
     let month: PeriodTotals
+    let projects: [ProjectAggregate]
 }

@@ -15,7 +15,8 @@ func runSmokeSuite(_ r: Runner) {
             timestamp: Date(),
             sessionId: "s1",
             model: "claude-3-5-sonnet-20241022",
-            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0
+            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0,
+            projectDir: "-test"
         )
         try expectEqual(e.displayModel, "Sonnet")
     }

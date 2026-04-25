@@ -91,6 +91,15 @@ func run() -> Int32 {
     print("\nAlertCenter (digest) ————————————————")
     runAlertCenterDigestSuite(r)
 
+    print("\nProjectName —————————————————————————")
+    runProjectNameSuite(r)
+
+    print("\nProjectAggregate ————————————————————")
+    runProjectAggregateSuite(r)
+
+    print("\nProjectFilter ———————————————————————")
+    runProjectFilterSuite(r)
+
     return r.report()
 }
 

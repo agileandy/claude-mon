@@ -82,6 +82,7 @@ private func sonnetEntry(id: String, at ts: Date, cost: Double) -> UsageEntry {
         inputTokens: tokens,
         outputTokens: 0,
         cacheCreationTokens: 0,
-        cacheReadTokens: 0
+        cacheReadTokens: 0,
+        projectDir: "-test"
     )
 }
