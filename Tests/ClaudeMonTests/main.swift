@@ -116,6 +116,9 @@ func run() async -> Int32 {
     print("\nJournalReader ———————————————————————")
     await runJournalReaderSuite(r)
 
+    print("\nLiveRateLimitStore ——————————————————")
+    await runLiveRateLimitStoreSuite(r)
+
     return r.report()
 }
 
