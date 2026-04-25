@@ -268,34 +268,35 @@ public final class AppState {
     /// current state, asks the pure evaluator which alerts to fire, delivers each one,
     /// and persists the fired IDs so we don't re-fire on the next poll.
     private func evaluateAndFireAlerts() async {
+        let before = firedAlertIds
+        firedAlertIds = await AlertCoordinator.evaluateAndFire(
+            snapshot: alertSnapshot(),
+            firedKeys: firedAlertIds,
+            deliver: { [alertCenter] alert in await alertCenter.deliver(alert) }
+        )
+        pruneFiredAlertIdsForCurrentBlock()
+        if firedAlertIds != before {
+            saveFiredAlertIds()
+        }
+    }
+
+    /// Builds the per-refresh value snapshot consumed by AlertCoordinator. Stays in
+    /// AppState because it pulls together state owned here (activeBlock, allEntries,
+    /// settings, today/dailyHistory).
+    private func alertSnapshot() -> AlertCoordinator.Snapshot {
         let sourceForAlerts: AlertCenter.Input.RateLimitSource =
             blockRateLimitSource == .live ? .live : .estimate
-
-        let input = AlertCenter.Input(
+        return AlertCoordinator.Snapshot(
             now: Date(),
             blockStartTime: activeBlock?.startTime,
             blockRateLimitPercent: blockRateLimitPercent,
             rateLimitSource: sourceForAlerts,
-            alreadyFiredKeys: firedAlertIds,
+            recentBurnBuckets: recentBurnBucketsForSpike(),
             alertsEnabled: alertsEnabled,
             onlyAlertOnLiveData: onlyAlertOnLiveData,
-            recentBurnBuckets: recentBurnBucketsForSpike(),
             digest: digestContext(),
             calendar: .current
         )
-
-        let alerts = AlertCenter.evaluate(input: input)
-        guard !alerts.isEmpty else {
-            pruneFiredAlertIdsForCurrentBlock()
-            return
-        }
-
-        for alert in alerts {
-            await alertCenter.deliver(alert)
-            firedAlertIds.insert(alert.id)
-        }
-        pruneFiredAlertIdsForCurrentBlock()
-        saveFiredAlertIds()
     }
 
     /// Keep the set bounded: retain only per-block keys that match the current block.

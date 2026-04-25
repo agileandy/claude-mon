@@ -125,6 +125,9 @@ func run() async -> Int32 {
     print("\nSessionAnalyzer —————————————————————")
     runSessionAnalyzerSuite(r)
 
+    print("\nAlertCoordinator ————————————————————")
+    await runAlertCoordinatorSuite(r)
+
     return r.report()
 }
 
