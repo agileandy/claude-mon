@@ -13,9 +13,15 @@ actor JournalReader {
         return f
     }()
 
-    init() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        projectsURL = home.appendingPathComponent(".claude/projects")
+    /// Default points at `~/.claude/projects`. Tests inject a fixture URL; production
+    /// code calls the no-arg form unchanged.
+    init(projectsURL: URL? = nil) {
+        if let projectsURL {
+            self.projectsURL = projectsURL
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            self.projectsURL = home.appendingPathComponent(".claude/projects")
+        }
     }
 
     /// One-shot computation: parse all journals, build blocks + aggregates. Runs on this actor, off main.
@@ -65,20 +71,13 @@ actor JournalReader {
 
                 seen.insert(msgId)
 
-                guard let timestamp = parseDate(raw.timestamp ?? "") else { continue }
-                guard timestamp >= startDate else { continue }
-
-                let entry = UsageEntry(
-                    id: msgId,
-                    timestamp: timestamp,
-                    sessionId: raw.sessionId ?? msgId,
-                    model: raw.message?.model ?? "claude-sonnet",
-                    inputTokens: usage.input_tokens,
-                    outputTokens: usage.output_tokens,
-                    cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
-                    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-                    projectDir: projectDir
-                )
+                guard let entry = makeEntry(
+                    raw: raw,
+                    msgId: msgId,
+                    usage: usage,
+                    projectDir: projectDir,
+                    startDate: startDate
+                ) else { continue }
                 entries.append(entry)
             }
         }
@@ -87,6 +86,31 @@ actor JournalReader {
     }
 
     // MARK: - Private
+
+    /// Maps a parsed JSONL line plus its file's project context into a UsageEntry.
+    /// Returns nil when the timestamp is unparseable or older than `startDate` —
+    /// the caller silently skips those, matching pre-R1 behaviour.
+    private func makeEntry(
+        raw: RawLine,
+        msgId: String,
+        usage: RawUsage,
+        projectDir: String,
+        startDate: Date
+    ) -> UsageEntry? {
+        guard let timestamp = parseDate(raw.timestamp ?? ""),
+              timestamp >= startDate else { return nil }
+        return UsageEntry(
+            id: msgId,
+            timestamp: timestamp,
+            sessionId: raw.sessionId ?? msgId,
+            model: raw.message?.model ?? "claude-sonnet",
+            inputTokens: usage.input_tokens,
+            outputTokens: usage.output_tokens,
+            cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+            cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+            projectDir: projectDir
+        )
+    }
 
     private func findJSONLFiles(since startDate: Date) throws -> [URL] {
         let fm = FileManager.default

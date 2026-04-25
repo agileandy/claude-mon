@@ -21,6 +21,19 @@ final class Runner {
         }
     }
 
+    /// Async variant for actor-bound services (e.g. JournalReader). Same shape as
+    /// `test(_:_:)` but awaits the body. Use from inside `async` suite functions.
+    func test(_ name: String, _ body: () async throws -> Void) async {
+        do {
+            try await body()
+            FileHandle.standardOutput.write(Data("  ok  \(name)\n".utf8))
+        } catch {
+            let msg = "  FAIL  \(name) — \(error)"
+            FileHandle.standardError.write(Data("\(msg)\n".utf8))
+            failures.append(msg)
+        }
+    }
+
     func report() -> Int32 {
         if failures.isEmpty {
             print("\nAll tests passed.")
@@ -58,7 +71,7 @@ func expectClose(_ a: Double, _ b: Double, tolerance: Double = 0.001, file: Stat
 // MARK: - Suites
 
 @MainActor
-func run() -> Int32 {
+func run() async -> Int32 {
     let r = Runner()
 
     print("Smoke ———————————————————————————————")
@@ -100,7 +113,10 @@ func run() -> Int32 {
     print("\nProjectFilter ———————————————————————")
     runProjectFilterSuite(r)
 
+    print("\nJournalReader ———————————————————————")
+    await runJournalReaderSuite(r)
+
     return r.report()
 }
 
-exit(run())
+exit(await run())

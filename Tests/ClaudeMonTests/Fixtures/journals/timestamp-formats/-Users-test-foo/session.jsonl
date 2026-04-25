@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-04-25T10:00:00.000Z","sessionId":"s1","message":{"id":"frac","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"type":"assistant","timestamp":"2026-04-25T10:00:01Z","sessionId":"s1","message":{"id":"nofrac","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
