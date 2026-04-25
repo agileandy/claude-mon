@@ -80,7 +80,11 @@ static func bucketize(
 
     // MARK: - Statistics
 
-    private static func median(of values: [Double]) -> Double {
+    /// Internal: AlertCenter.detectSpike (in R4) reuses this to dedup the inline
+    /// median calculation that was previously duplicated there. Kept on the
+    /// estimator because that's the only file that owns "statistics over Bucket
+    /// costs" — alert policy (3× ratio + $0.05 floor) stays at the call site.
+    static func median(of values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
         let n = sorted.count

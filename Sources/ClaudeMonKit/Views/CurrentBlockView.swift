@@ -371,7 +371,7 @@ struct CurrentBlockView: View {
         let fmt = DateFormatter()
         fmt.timeStyle = .short
         fmt.dateStyle = .none
-        return "\(fmt.string(from: block.startTime)) – \(fmt.string(from: block.startTime.addingTimeInterval(5 * 3600)))"
+        return "\(fmt.string(from: block.startTime)) – \(fmt.string(from: block.startTime.addingTimeInterval(SessionAnalyzer.blockWindow)))"
     }
 }
 

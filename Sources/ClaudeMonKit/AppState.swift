@@ -440,7 +440,7 @@ public final class AppState {
             return live.fiveHour.resetsAt
         }
         guard let block = activeBlock else { return nil }
-        return block.startTime.addingTimeInterval(5 * 3600)
+        return block.startTime.addingTimeInterval(SessionAnalyzer.blockWindow)
     }
 
     // MARK: - Predictions (current block, cost-based)

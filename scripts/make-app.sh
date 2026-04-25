@@ -9,9 +9,14 @@ CONFIG="${1:-release}"
 BINARY="$ROOT/.build/arm64-apple-macosx/$CONFIG/ClaudeMon"
 APP="$ROOT/.build/ClaudeMon.app"
 
+# Build the executable product. `--target ClaudeMon` only compiles to .o; you need
+# `--product ClaudeMon` to get the link step that produces the actual binary.
+# Skipping `--product` was a real source of "stale binary in .app" pain.
+echo "Building ClaudeMon ($CONFIG) …" >&2
+( cd "$ROOT" && swift build --product ClaudeMon -c "$CONFIG" )
+
 if [ ! -x "$BINARY" ]; then
-  echo "Binary not found at $BINARY." >&2
-  echo "Run: swift build -c $CONFIG" >&2
+  echo "Binary missing at $BINARY after build — link step likely failed." >&2
   exit 1
 fi
 

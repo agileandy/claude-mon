@@ -20,4 +20,15 @@ func runSmokeSuite(_ r: Runner) {
         )
         try expectEqual(e.displayModel, "Sonnet")
     }
+
+    // Guard: if `#filePath`-based fixture resolution ever stops working, this
+    // test fails loudly before any service-level fixture test makes it look
+    // like a service regression.
+    r.test("fixtures_directory_resolvesAndExists") {
+        let url = Fixtures.directory
+        try expect(url.path.hasSuffix("/Tests/ClaudeMonTests/Fixtures"),
+                   "expected suffix Tests/ClaudeMonTests/Fixtures, got \(url.path)")
+        try expect(FileManager.default.fileExists(atPath: url.path),
+                   "fixtures dir does not exist on disk: \(url.path)")
+    }
 }

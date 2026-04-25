@@ -33,7 +33,7 @@ extension SessionBlock {
         let start = sorted.first!.timestamp
         let end   = sorted.last!.timestamp
 
-        let blockWindowEnd = start.addingTimeInterval(5 * 3600)
+        let blockWindowEnd = start.addingTimeInterval(SessionAnalyzer.blockWindow)
         let active = now < blockWindowEnd
 
         var totalInput = 0, totalOutput = 0, totalCacheCreate = 0, totalCacheRead = 0
