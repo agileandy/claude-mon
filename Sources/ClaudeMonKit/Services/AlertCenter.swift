@@ -211,15 +211,16 @@ actor AlertCenter {
     /// median of the preceding buckets — provided the absolute amount is meaningful
     /// (≥ $0.05, so a $0.01 prompt doesn't fire an alert just because the window was
     /// entirely zero before it). `nil` means no spike.
+    ///
+    /// Median calculation delegates to `BurnRateEstimator.median(of:)` — same logic
+    /// as the burn-rate estimator uses, so spike detection stays consistent with
+    /// the projection. Alert policy (3× ratio + $0.05 floor) stays here.
     private static func detectSpike(
         buckets: [BurnRateEstimator.Bucket]
     ) -> (latest: Double, median: Double)? {
         guard buckets.count >= 4, let latest = buckets.last else { return nil }
-        let prior = buckets.dropLast().map { $0.cost }.sorted()
-        let n = prior.count
-        let median = n % 2 == 1
-            ? prior[n / 2]
-            : (prior[n / 2 - 1] + prior[n / 2]) / 2
+        let priorCosts = buckets.dropLast().map { $0.cost }
+        let median = BurnRateEstimator.median(of: priorCosts)
         // Floor at $0.05 absolute so zero-history blocks don't emit alerts on trivial spend.
         let threshold = max(median * 3, 0.05)
         guard latest.cost > threshold else { return nil }
