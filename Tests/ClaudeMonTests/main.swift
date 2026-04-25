@@ -119,6 +119,9 @@ func run() async -> Int32 {
     print("\nLiveRateLimitStore ——————————————————")
     await runLiveRateLimitStoreSuite(r)
 
+    print("\nUsageAggregator —————————————————————")
+    runUsageAggregatorSuite(r)
+
     return r.report()
 }
 
