@@ -61,6 +61,7 @@ enum UsageAggregator {
             return ProjectAggregate(
                 dir: dir,
                 displayName: decoded.display,
+                fullDisplay: decoded.fullDisplay,
                 fullPath: decoded.path,
                 weekCost: cost,
                 weekTokens: tokens,
@@ -71,6 +72,108 @@ enum UsageAggregator {
             )
         }
         return aggregates.sorted { $0.weekCost > $1.weekCost }
+    }
+
+    /// Log-scale aggregating timeline for the History tab. Returns oldest→newest:
+    /// yearly buckets (older than ~1 year) → monthly (~31–365 days ago) → weekly
+    /// (~8–28 days ago) → daily (last 7 days). Older empty buckets are dropped so a
+    /// new install doesn't show a wall of zeros.
+    static func aggregatedTimeline(
+        from entries: [UsageEntry],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [TimeBucket] {
+        let todayStart    = calendar.startOfDay(for: now)
+        // 7 daily buckets ending with today's bucket.
+        let dayWindowStart  = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart
+        // 3 weekly buckets immediately preceding the daily window (21 days).
+        let weekWindowStart = calendar.date(byAdding: .day, value: -21, to: dayWindowStart) ?? dayWindowStart
+        // Monthly buckets cover from start-of-month-12-months-ago up to weekWindowStart.
+        // The day-30 → day-7 weekly rule means months end at weekWindowStart, even if
+        // that's mid-month — fine for visual buckets.
+        let yearAgo = calendar.date(byAdding: .day, value: -365, to: todayStart) ?? todayStart
+        let monthWindowStart = calendar.dateInterval(of: .month, for: yearAgo)?.start ?? yearAgo
+
+        // Earliest entry decides how far back yearly buckets reach. If no entries,
+        // we still emit the 7 daily zero-buckets (matching `last7Days` semantics).
+        let earliestEntry = entries.map(\.timestamp).min()
+
+        var buckets: [TimeBucket] = []
+
+        // Year buckets: only emitted when there's data older than ~1 year.
+        if let earliest = earliestEntry, earliest < monthWindowStart {
+            let earliestYearStart = calendar.dateInterval(of: .year, for: earliest)?.start ?? earliest
+            var cursor = earliestYearStart
+            while cursor < monthWindowStart {
+                let nextYear = calendar.date(byAdding: .year, value: 1, to: cursor) ?? monthWindowStart
+                let bucketEnd = min(nextYear, monthWindowStart)
+                let agg = totals(from: entries.filter { $0.timestamp >= cursor && $0.timestamp < bucketEnd })
+                let yearLabel = String(calendar.component(.year, from: cursor))
+                buckets.append(TimeBucket(
+                    granularity: .year, start: cursor, end: bucketEnd,
+                    totalCost: agg.cost, totalTokens: agg.tokens,
+                    messageCount: agg.messages, label: yearLabel
+                ))
+                cursor = nextYear
+            }
+        }
+
+        // Month buckets: only emitted when there's data older than the weekly window.
+        // Monthly buckets start at the calendar-month containing the earliest entry,
+        // clamped to no earlier than 1 year ago (older data falls into yearly buckets).
+        if let earliest = earliestEntry, earliest < weekWindowStart {
+            let earliestMonthStart = calendar.dateInterval(of: .month, for: earliest)?.start ?? earliest
+            let monthStart = max(earliestMonthStart, monthWindowStart)
+            var cursor = monthStart
+            while cursor < weekWindowStart {
+                let nextMonth = calendar.date(byAdding: .month, value: 1, to: cursor) ?? weekWindowStart
+                let bucketEnd = min(nextMonth, weekWindowStart)
+                let agg = totals(from: entries.filter { $0.timestamp >= cursor && $0.timestamp < bucketEnd })
+                let label = monthLabel(cursor, calendar: calendar)
+                buckets.append(TimeBucket(
+                    granularity: .month, start: cursor, end: bucketEnd,
+                    totalCost: agg.cost, totalTokens: agg.tokens,
+                    messageCount: agg.messages, label: label
+                ))
+                cursor = nextMonth
+            }
+        }
+
+        // Week buckets: always 3, even on an empty install (consistent with daily).
+        do {
+            var cursor = weekWindowStart
+            while cursor < dayWindowStart {
+                let nextWeek = calendar.date(byAdding: .day, value: 7, to: cursor) ?? dayWindowStart
+                let bucketEnd = min(nextWeek, dayWindowStart)
+                let agg = totals(from: entries.filter { $0.timestamp >= cursor && $0.timestamp < bucketEnd })
+                let label = weekLabel(cursor, calendar: calendar)
+                buckets.append(TimeBucket(
+                    granularity: .week, start: cursor, end: bucketEnd,
+                    totalCost: agg.cost, totalTokens: agg.tokens,
+                    messageCount: agg.messages, label: label
+                ))
+                cursor = nextWeek
+            }
+        }
+
+        // Day buckets: always 7, ending with today.
+        do {
+            var cursor = dayWindowStart
+            let endOfToday = calendar.date(byAdding: .day, value: 1, to: todayStart) ?? todayStart
+            while cursor < endOfToday {
+                let nextDay = calendar.date(byAdding: .day, value: 1, to: cursor) ?? endOfToday
+                let agg = totals(from: entries.filter { $0.timestamp >= cursor && $0.timestamp < nextDay })
+                let label = dayLabel(cursor, calendar: calendar)
+                buckets.append(TimeBucket(
+                    granularity: .day, start: cursor, end: nextDay,
+                    totalCost: agg.cost, totalTokens: agg.tokens,
+                    messageCount: agg.messages, label: label
+                ))
+                cursor = nextDay
+            }
+        }
+
+        return buckets
     }
 
     static func last7Days(from entries: [UsageEntry], now: Date = Date(), calendar: Calendar = .current) -> [DailyAggregate] {
@@ -117,6 +220,29 @@ enum UsageAggregator {
         return byModel
             .map { ModelAggregate(model: $0.key, tokens: $0.value.tokens, cost: $0.value.cost) }
             .sorted { $0.cost > $1.cost }
+    }
+
+    private static func dayLabel(_ date: Date, calendar: Calendar) -> String {
+        let f = DateFormatter()
+        f.calendar = calendar
+        f.dateFormat = "EEE d"
+        return f.string(from: date)
+    }
+
+    private static func weekLabel(_ date: Date, calendar: Calendar) -> String {
+        let week = calendar.component(.weekOfYear, from: date)
+        return "W\(week)"
+    }
+
+    private static func monthLabel(_ date: Date, calendar: Calendar) -> String {
+        let f = DateFormatter()
+        f.calendar = calendar
+        // Include the year suffix when the month isn't in the current year so the
+        // ~1-year history doesn't fold into ambiguous month names ("Apr" twice).
+        let nowYear = calendar.component(.year, from: Date())
+        let bucketYear = calendar.component(.year, from: date)
+        f.dateFormat = (bucketYear == nowYear) ? "MMM" : "MMM yy"
+        return f.string(from: date)
     }
 
     private static func totals(from entries: [UsageEntry]) -> PeriodTotals {

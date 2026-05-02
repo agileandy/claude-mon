@@ -403,6 +403,14 @@ public final class AppState {
         selectedProjectFilter == nil ? sessionBlocks : SessionAnalyzer.analyze(entries: filteredEntries)
     }
 
+    /// Log-scale timeline used by the History tab — day buckets for the last week,
+    /// weekly buckets for the prior month, monthly for the prior year, yearly older.
+    /// Re-derived from `filteredEntries` on each access so it reflects the active
+    /// project filter.
+    var timelineBuckets: [TimeBucket] {
+        UsageAggregator.aggregatedTimeline(from: filteredEntries)
+    }
+
     var blockCostPercent: Double {
         guard let block = activeBlock, effectiveCostPerBlock > 0 else { return 0 }
         return min(100, block.totalCost / effectiveCostPerBlock * 100)
@@ -442,6 +450,20 @@ public final class AppState {
         }
         guard let block = activeBlock else { return nil }
         return block.startTime.addingTimeInterval(SessionAnalyzer.blockWindow)
+    }
+
+    /// Anthropic's server-side weekly (7-day) rate-limit percentage, when fresh live
+    /// data is available. Distinct from `weeklyBudgetPercent`, which tracks the user's
+    /// self-imposed cost budget. Nil when no fresh capture exists — there is no local
+    /// fallback for the weekly window (we don't track a weekly message counter).
+    var weeklyRateLimitPercent: Double? {
+        guard let live = liveRateLimit, live.freshness() == .fresh else { return nil }
+        return live.sevenDay.usedPercentage
+    }
+
+    var weeklyRateLimitResetsAt: Date? {
+        guard let live = liveRateLimit, live.freshness() == .fresh else { return nil }
+        return live.sevenDay.resetsAt
     }
 
     // MARK: - Predictions (current block, cost-based)

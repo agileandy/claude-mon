@@ -46,6 +46,11 @@ struct CurrentBlockView: View {
             // and $-value burned this block (informational only).
             blockQuotaRow(block: block)
 
+            // Week quota row: Anthropic's server-side 7-day rate-limit %, sourced from
+            // the same statusline capture as `blockQuotaRow`. Only renders when fresh
+            // live data exists — there is no estimate fallback for the weekly window.
+            weeklyQuotaRow
+
             // Token breakdown (no limit — Claude console doesn't track tokens)
             HStack(spacing: 12) {
                 statBox(title: "Input",        value: formatCompact(block.totalInputTokens))
@@ -330,6 +335,60 @@ struct CurrentBlockView: View {
                     .monospacedDigit()
             }
         }
+    }
+
+    @ViewBuilder
+    private var weeklyQuotaRow: some View {
+        let pct = state.weeklyRateLimitPercent
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Week")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if pct == nil {
+                    Text("(no live data)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                if let pct {
+                    Text(String(format: "%.0f%%", pct))
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(quotaColor(pct))
+                        .monospacedDigit()
+                } else {
+                    Text("—")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            QuotaBar(percent: pct ?? 0)
+                .frame(height: 6)
+                .opacity(pct == nil ? 0.35 : 1)
+
+            if let resetsAt = state.weeklyRateLimitResetsAt {
+                HStack {
+                    Spacer()
+                    Text("resets \(formatRelativeFuture(resetsAt))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private func formatRelativeFuture(_ date: Date) -> String {
+        let secs = date.timeIntervalSinceNow
+        if secs <= 0 { return "now" }
+        let days = Int(secs / 86400)
+        if days >= 1 { return "in \(days)d" }
+        let hours = Int(secs / 3600)
+        if hours >= 1 { return "in \(hours)h" }
+        let mins = max(1, Int(secs / 60))
+        return "in \(mins)m"
     }
 
     private func quotaRow(label: String, used: String, limit: String, percent: Double) -> some View {

@@ -56,4 +56,39 @@ func runProjectNameSuite(_ r: Runner) {
         try expectEqual(result.display, parts.last!)
         try expect(result.path == home, "should reconstruct $HOME, got \(String(describing: result.path))")
     }
+
+    r.test("projectName_fullDisplay_collapsesHomeToTilde") {
+        let result = ProjectName.decode(
+            dirName: "-Users-andy-Dev-Space-myproj",
+            homeDir: "/Users/andy",
+            pathExists: alwaysExists
+        )
+        try expectEqual(result.fullDisplay, "~/Dev/Space/myproj")
+    }
+
+    r.test("projectName_fullDisplay_keepsAbsolutePathOutsideHome") {
+        let result = ProjectName.decode(
+            dirName: "-Applications-Foo",
+            homeDir: "/Users/andy",
+            pathExists: alwaysExists
+        )
+        try expectEqual(result.fullDisplay, "/Applications/Foo")
+    }
+
+    r.test("projectName_fullDisplay_unverifiedMungedPathStillShown") {
+        // When pathExists returns false, fullDisplay is best-effort: still show the
+        // reconstructed path so the user has context, even if it's lossy.
+        let result = ProjectName.decode(
+            dirName: "-Users-andy-foo",
+            homeDir: "/Users/andy",
+            pathExists: neverExists
+        )
+        try expect(result.path == nil)
+        try expectEqual(result.fullDisplay, "~/foo")
+    }
+
+    r.test("projectName_fullDisplay_bareNameFallsBackToDisplay") {
+        let result = ProjectName.decode(dirName: "myproject", pathExists: neverExists)
+        try expectEqual(result.fullDisplay, "myproject")
+    }
 }
