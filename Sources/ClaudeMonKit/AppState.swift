@@ -16,14 +16,14 @@ public final class AppState {
     var todayTotals: PeriodTotals    = PeriodTotals()
     var weekTotals: PeriodTotals     = PeriodTotals()   // rolling 7d ending now
     var prevWeekTotals: PeriodTotals = PeriodTotals()   // rolling 7d ending 7d ago
-    var monthTotals: PeriodTotals    = PeriodTotals()
+    var lifetimeTotals: PeriodTotals = PeriodTotals()
 
     /// Per-project rollups over the rolling 7d window. Sorted by week cost desc.
     /// Drives the Projects tab and the header filter dropdown.
     var projectTotals: [ProjectAggregate] = []
 
     /// Currently-selected project filter (the raw `projectDir` key), or `nil` for "all".
-    /// Affects period totals (today/week/prev/month) and history. Block-level rate-limit
+    /// Affects period totals (today/week/prev/lifetime) and history. Block-level rate-limit
     /// stuff (activeBlock, blockRateLimitPercent, burn rate, projection) intentionally
     /// stays GLOBAL — Claude enforces rate limits across all projects, so filtering
     /// would mislead the user.
@@ -252,7 +252,7 @@ public final class AppState {
             todayTotals     = bundle.today
             weekTotals      = bundle.week
             prevWeekTotals  = bundle.prevWeek
-            monthTotals     = bundle.month
+            lifetimeTotals  = bundle.lifetime
             projectTotals   = bundle.projects
             lastError       = nil
 
@@ -389,8 +389,8 @@ public final class AppState {
     var displayedPrevWeekTotals: PeriodTotals {
         selectedProjectFilter == nil ? prevWeekTotals : UsageAggregator.previousWeek(from: filteredEntries)
     }
-    var displayedMonthTotals: PeriodTotals {
-        selectedProjectFilter == nil ? monthTotals : UsageAggregator.thisMonth(from: filteredEntries)
+    var displayedLifetimeTotals: PeriodTotals {
+        selectedProjectFilter == nil ? lifetimeTotals : UsageAggregator.lifetime(from: filteredEntries)
     }
     var displayedDailyHistory: [DailyAggregate] {
         selectedProjectFilter == nil ? dailyHistory : UsageAggregator.last7Days(from: filteredEntries)

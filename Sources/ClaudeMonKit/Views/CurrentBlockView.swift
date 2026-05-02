@@ -202,7 +202,7 @@ struct CurrentBlockView: View {
                 }
             }
             Divider()
-            PeriodAccordionRow(label: "This month", totals: state.displayedMonthTotals)
+            PeriodAccordionRow(label: "Lifetime", totals: state.displayedLifetimeTotals)
         }
         .padding(12)
         .background(Color.secondary.opacity(0.07))

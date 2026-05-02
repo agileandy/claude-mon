@@ -58,16 +58,16 @@ func runUsageAggregatorSuite(_ r: Runner) {
         try expectEqual(p.messages, 2)
     }
 
-    r.test("thisMonth_respectsCalendarMonthBoundary") {
-        // April starts 30 days before May 1; for now=2026-04-25 12:00 UTC,
-        // the month start is 2026-04-01 00:00 UTC. 25 days before now plus headroom.
+    r.test("lifetime_includesEveryEntryRegardlessOfDate") {
+        // Lifetime ignores calendar boundaries — it's the journal reader's
+        // `usageStartDate` filter that bounds the data, not the aggregator.
         let entries = [
-            entry(id: "march-15", daysAgo: 41),  // outside (in March)
-            entry(id: "april-3",  daysAgo: 22),  // inside April
-            entry(id: "today",    daysAgo: 0),   // inside April
+            entry(id: "march-15", daysAgo: 41),
+            entry(id: "april-3",  daysAgo: 22),
+            entry(id: "today",    daysAgo: 0),
         ]
-        let m = UsageAggregator.thisMonth(from: entries, now: now, calendar: cal)
-        try expectEqual(m.messages, 2)
+        let m = UsageAggregator.lifetime(from: entries)
+        try expectEqual(m.messages, 3)
     }
 
     r.test("last7Days_returnsExactly7BucketsWithGapsAsZeros") {

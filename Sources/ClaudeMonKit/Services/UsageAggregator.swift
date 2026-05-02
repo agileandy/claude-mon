@@ -27,9 +27,11 @@ enum UsageAggregator {
         return totals(from: entries.filter { $0.timestamp >= start && $0.timestamp <= end })
     }
 
-    static func thisMonth(from entries: [UsageEntry], now: Date = Date(), calendar: Calendar = .current) -> PeriodTotals {
-        let start = calendar.dateInterval(of: .month, for: now)?.start ?? now
-        return totals(from: entries.filter { $0.timestamp >= start })
+    /// Sum of every entry the app has loaded. Bound by `usageStartDate` — the journal
+    /// reader filters entries before that — so this is "lifetime since the user
+    /// configured a start date", not all-time history.
+    static func lifetime(from entries: [UsageEntry]) -> PeriodTotals {
+        totals(from: entries)
     }
 
     /// Group entries by `projectDir` over the rolling 7-day window. Each result also
