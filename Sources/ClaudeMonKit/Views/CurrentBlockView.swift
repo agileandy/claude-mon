@@ -121,30 +121,49 @@ struct CurrentBlockView: View {
                 }
             }
 
-            predictionRow("Budget left",
-                          value: formatCost(state.runwayRemainingCost))
+            // Pace: the comparison the user actually cares about — how much
+            // of their rate-limit they've consumed vs how much of the 5h
+            // window has elapsed. Under-pace is healthy (you'd reach reset
+            // with budget to spare); over-pace means the projection below
+            // will hit 100% before the block resets.
+            predictionRow(
+                "Pace",
+                value: String(
+                    format: "%.0f%% used / %.0f%% time",
+                    state.blockRateLimitPercent,
+                    state.blockTimeElapsedPercent
+                )
+            )
 
-            if let seconds = state.runwaySecondsAtBurn {
-                if seconds < 0 {
-                    // Past the budget. The "Xm ago" framing was misleading —
-                    // current burn rate isn't a historical constant, and the
-                    // word "limit" sounded like a hard cutoff when this is
-                    // just the user's self-imposed cost budget. Show the
-                    // actionable number instead: how much over right now.
-                    let over = block.totalCost - state.effectiveCostPerBlock
-                    predictionRow("Over budget",
-                                  value: formatCost(over))
-                } else if state.limitHitBeforeBlockEnd, let hit = state.limitHitAt {
-                    predictionRow("Hits budget at",
-                                  value: formatClock(hit) + "  (" + formatDuration(seconds) + ")")
-                } else if block.burnRateCostPerHour > 0 {
-                    predictionRow("Hits budget at",
-                                  value: "— stays under")
-                }
+            // Hits limit at: rate-limit-based projection. % is bounded 0-100,
+            // so there's no past-tense case to worry about — once you're at
+            // 100% we render that fact directly.
+            if state.blockRateLimitPercent >= 100 {
+                predictionRow("Limit hit", value: "now — wait for reset")
+            } else if state.rateLimitHitBeforeBlockEnd,
+                      let hit = state.rateLimitHitAt,
+                      let secs = state.rateLimitSecondsAtPace {
+                predictionRow(
+                    "Hits limit at",
+                    value: formatClock(hit) + "  (" + formatDuration(secs) + ")"
+                )
+            } else {
+                predictionRow("Hits limit at", value: "— stays under")
             }
 
-            predictionRow("End-of-block",
-                          value: formatCost(block.projectedCost))
+            // End-of-block projection is now in % (not $) so it lines up with
+            // the pace metric above.
+            predictionRow(
+                "End-of-block",
+                value: String(format: "%.0f%%", state.projectedBlockRateLimitPercent)
+            )
+
+            // Cost remains as a separate informational row — useful context
+            // without being framed as a budget that you've "blown".
+            predictionRow(
+                "Cost",
+                value: formatCost(block.totalCost) + " → " + formatCost(block.projectedCost)
+            )
 
             if let caveat = confidenceCaveat(block.projectionConfidence) {
                 HStack(spacing: 4) {

@@ -474,48 +474,75 @@ public final class AppState {
         return live.sevenDay.resetsAt
     }
 
-    // MARK: - Predictions (current block, cost-based)
+    // MARK: - Predictions (current block, rate-limit pace)
+    //
+    // Cost-based budget prediction was removed in fix/rate-limit-pace-prediction:
+    // the cost-per-block plan default is a synthetic number that drifts from the
+    // real constraint (rate limit on messages/tokens). The user can be at 32% of
+    // their actual rate-limit usage while a stale cost-budget projection screams
+    // "Overrun" — confusing and wrong. Prediction now compares % rate-limit used
+    // against % time elapsed and projects the end-of-block percentage linearly.
 
-    /// Dollars remaining until the block cost limit. Clamped to 0 when over —
-    /// the "Budget left $0.00" UI is what's wanted in that case.
-    var runwayRemainingCost: Double {
+    /// Time elapsed in the current block as a percentage of the 5h window. 0
+    /// when there's no active block. Capped at 100 so a stale block doesn't
+    /// produce nonsense projections.
+    var blockTimeElapsedPercent: Double {
         guard let block = activeBlock else { return 0 }
-        return max(0, effectiveCostPerBlock - block.totalCost)
+        let elapsed = Date().timeIntervalSince(block.startTime)
+        guard SessionAnalyzer.blockWindow > 0 else { return 0 }
+        return min(100, max(0, elapsed / SessionAnalyzer.blockWindow * 100))
     }
 
-    /// Signed seconds until the cost limit is hit at the current burn rate.
-    /// Positive = in the future, negative = already crossed (magnitude = how long
-    /// ago). Nil only when we genuinely can't project (no active block, no burn
-    /// rate, no limit). The view branches on the sign so it can render
-    /// "Hits limit at HH:MM" vs "Limit hit Xm ago" instead of falsely claiming
-    /// the user "stays under" after they've already blown through it.
-    var runwaySecondsAtBurn: TimeInterval? {
-        guard let block = activeBlock,
-              block.burnRateCostPerHour > 0,
-              effectiveCostPerBlock > 0 else { return nil }
-        let remaining = effectiveCostPerBlock - block.totalCost
-        return remaining / block.burnRateCostPerHour * 3600
+    /// Linear projection: at the current pace, what % of the rate limit will
+    /// be consumed by block end? `currentPercent / timeElapsedPercent × 100`.
+    /// Returns the current % when too little time has passed for a meaningful
+    /// projection (avoid divide-by-tiny-number explosions).
+    var projectedBlockRateLimitPercent: Double {
+        let pct = blockRateLimitPercent
+        let timePct = blockTimeElapsedPercent
+        guard timePct > 1 else { return pct }
+        return pct / timePct * 100
     }
 
-    /// Wall-clock timestamp when the limit was/will be hit. Past dates are
-    /// returned as-is — the view formats them as "X ago".
-    var limitHitAt: Date? {
-        guard let seconds = runwaySecondsAtBurn else { return nil }
-        return Date().addingTimeInterval(seconds)
+    /// Seconds until the rate-limit % would reach 100, projected linearly from
+    /// the current pace. Nil when there's no active block, the window hasn't
+    /// produced enough signal, or the user is already at/over 100%. Negative
+    /// shouldn't happen because % is clamped 0–100, so callers don't need to
+    /// handle a past-tense case.
+    var rateLimitSecondsAtPace: TimeInterval? {
+        guard let block = activeBlock else { return nil }
+        let pct = blockRateLimitPercent
+        let elapsed = Date().timeIntervalSince(block.startTime)
+        guard pct > 0.5, elapsed > 60 else { return nil }   // need a little signal
+        if pct >= 100 { return 0 }
+        let perSecond = pct / elapsed
+        guard perSecond > 0 else { return nil }
+        let secs = (100 - pct) / perSecond
+        // Block can't outlast its own window — clamp so "stays under" decisions
+        // remain comparable to remainingSeconds.
+        return min(secs, SessionAnalyzer.blockWindow * 2)
     }
 
-    /// True when the limit was/will be reached during the current 5h block.
-    /// Past hits (negative seconds) are always "before block end" by definition.
-    var limitHitBeforeBlockEnd: Bool {
-        guard let seconds = runwaySecondsAtBurn, let block = activeBlock else { return false }
-        return seconds < block.remainingSeconds
+    var rateLimitHitAt: Date? {
+        guard let s = rateLimitSecondsAtPace else { return nil }
+        return Date().addingTimeInterval(s)
     }
 
+    /// True when the rate limit will hit 100% before the current 5h block ends.
+    /// "Stays under" / "hits before reset" is the binary the prediction row needs.
+    var rateLimitHitBeforeBlockEnd: Bool {
+        guard let s = rateLimitSecondsAtPace, let block = activeBlock else { return false }
+        return s < block.remainingSeconds
+    }
+
+    /// Risk tier driven by the projected end-of-block rate-limit %, not by cost.
+    /// `RiskTier.evaluate` is generic ratio math so we feed (projectedPercent,
+    /// 100) and reuse the existing thresholds.
     var blockRisk: RiskTier {
         guard let block = activeBlock else { return .onTrack }
         return RiskTier.evaluate(
-            projectedCost: block.projectedCost,
-            costLimit: effectiveCostPerBlock,
+            projectedCost: projectedBlockRateLimitPercent,
+            costLimit: 100,
             confidence: block.projectionConfidence
         )
     }
