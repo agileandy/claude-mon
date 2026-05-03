@@ -22,6 +22,30 @@ public final class AppState {
     /// Drives the Projects tab and the header filter dropdown.
     var projectTotals: [ProjectAggregate] = []
 
+    // MARK: - Cached derived views (recomputed on refresh + filter change)
+
+    /// Entries scoped to `selectedProjectFilter`. Equals `allEntries` when no filter
+    /// is set. Recomputed on refresh and on filter change so SwiftUI reads are O(1).
+    var filteredEntries: [UsageEntry] = []
+
+    var displayedTodayTotals: PeriodTotals    = PeriodTotals()
+    var displayedWeekTotals: PeriodTotals     = PeriodTotals()
+    var displayedPrevWeekTotals: PeriodTotals = PeriodTotals()
+    var displayedLifetimeTotals: PeriodTotals = PeriodTotals()
+    var displayedDailyHistory: [DailyAggregate] = []
+    var displayedSessionBlocks: [SessionBlock] = []
+
+    /// Log-scale timeline used by the History tab.
+    var timelineBuckets: [TimeBucket] = []
+
+    /// Multi-day forecast for the user's weekly budget. Always derived from the
+    /// global `allEntries` (forecast intentionally ignores the project filter).
+    var weeklyForecast: WeeklyForecast = WeeklyForecast(
+        outcome: .unavailable,
+        dailyCostMedian: 0,
+        confidence: .low
+    )
+
     /// Currently-selected project filter (the raw `projectDir` key), or `nil` for "all".
     /// Affects period totals (today/week/prev/lifetime) and history. Block-level rate-limit
     /// stuff (activeBlock, blockRateLimitPercent, burn rate, projection) intentionally
@@ -34,6 +58,7 @@ public final class AppState {
             } else {
                 UserDefaults.standard.set(selectedProjectFilter, forKey: "selectedProjectFilter")
             }
+            recomputeDerived()
         }
     }
 
@@ -251,6 +276,7 @@ public final class AppState {
             projectTotals   = bundle.projects
             lastError       = nil
 
+            recomputeDerived()
             await evaluateAndFireAlerts()
         } catch {
             lastError = error.localizedDescription
@@ -361,13 +387,6 @@ public final class AppState {
 
     // MARK: - Filtered views (WS-3)
 
-    /// Entries narrowed by `selectedProjectFilter`. Same as `allEntries` when no
-    /// filter is set; views should prefer these when rendering project-scoped data.
-    var filteredEntries: [UsageEntry] {
-        guard let dir = selectedProjectFilter else { return allEntries }
-        return allEntries.filter { $0.projectDir == dir }
-    }
-
     /// Display name for the active filter (best-effort). Used by the header banner.
     var selectedProjectDisplay: String? {
         guard let dir = selectedProjectFilter else { return nil }
@@ -375,35 +394,38 @@ public final class AppState {
             ?? ProjectName.decode(dirName: dir).display
     }
 
-    var displayedTodayTotals: PeriodTotals {
-        selectedProjectFilter == nil ? todayTotals : UsageAggregator.today(from: filteredEntries)
-    }
-    var displayedWeekTotals: PeriodTotals {
-        selectedProjectFilter == nil ? weekTotals : UsageAggregator.thisWeek(from: filteredEntries)
-    }
-    var displayedPrevWeekTotals: PeriodTotals {
-        selectedProjectFilter == nil ? prevWeekTotals : UsageAggregator.previousWeek(from: filteredEntries)
-    }
-    var displayedLifetimeTotals: PeriodTotals {
-        selectedProjectFilter == nil ? lifetimeTotals : UsageAggregator.lifetime(from: filteredEntries)
-    }
-    var displayedDailyHistory: [DailyAggregate] {
-        selectedProjectFilter == nil ? dailyHistory : UsageAggregator.last7Days(from: filteredEntries)
-    }
-
-    /// Session blocks scoped to the active filter when one is set. Rebuilt from the
-    /// filtered entries — same 5h-windowing logic, but a block only appears if the
-    /// filtered project contributed messages to it.
-    var displayedSessionBlocks: [SessionBlock] {
-        selectedProjectFilter == nil ? sessionBlocks : SessionAnalyzer.analyze(entries: filteredEntries)
-    }
-
-    /// Log-scale timeline used by the History tab — day buckets for the last week,
-    /// weekly buckets for the prior month, monthly for the prior year, yearly older.
-    /// Re-derived from `filteredEntries` on each access so it reflects the active
-    /// project filter.
-    var timelineBuckets: [TimeBucket] {
-        UsageAggregator.aggregatedTimeline(from: filteredEntries)
+    /// Recompute every cache that depends on `allEntries` and/or `selectedProjectFilter`.
+    /// Called once after each refresh and once whenever the user toggles the filter.
+    /// Replaces the previous "computed-on-every-access" pattern that re-derived
+    /// timeline buckets, weekly forecast, and session blocks on every SwiftUI render.
+    private func recomputeDerived() {
+        if let dir = selectedProjectFilter {
+            let scoped = allEntries.filter { $0.projectDir == dir }
+            filteredEntries          = scoped
+            displayedTodayTotals     = UsageAggregator.today(from: scoped)
+            displayedWeekTotals      = UsageAggregator.thisWeek(from: scoped)
+            displayedPrevWeekTotals  = UsageAggregator.previousWeek(from: scoped)
+            displayedLifetimeTotals  = UsageAggregator.lifetime(from: scoped)
+            displayedDailyHistory    = UsageAggregator.last7Days(from: scoped)
+            displayedSessionBlocks   = SessionAnalyzer.analyze(entries: scoped)
+            timelineBuckets          = UsageAggregator.aggregatedTimeline(from: scoped)
+        } else {
+            filteredEntries          = allEntries
+            displayedTodayTotals     = todayTotals
+            displayedWeekTotals      = weekTotals
+            displayedPrevWeekTotals  = prevWeekTotals
+            displayedLifetimeTotals  = lifetimeTotals
+            displayedDailyHistory    = dailyHistory
+            displayedSessionBlocks   = sessionBlocks
+            timelineBuckets          = UsageAggregator.aggregatedTimeline(from: allEntries)
+        }
+        // Forecast is always global — the forecast UI is hidden when a filter is set.
+        weeklyForecast = WeeklyForecast.compute(
+            entries: allEntries,
+            weekTotalsCost: weekTotals.cost,
+            weeklyBudget: weeklyBudget,
+            now: Date()
+        )
     }
 
     var blockCostPercent: Double {
@@ -509,17 +531,6 @@ public final class AppState {
     var weeklyBudgetPercent: Double {
         guard weeklyBudget > 0 else { return 0 }
         return min(100, weekTotals.cost / weeklyBudget * 100)
-    }
-
-    /// Multi-day forecast: at current median daily burn, when would the rolling-7d
-    /// total reach the weekly budget? See WeeklyForecast.compute.
-    var weeklyForecast: WeeklyForecast {
-        WeeklyForecast.compute(
-            entries: allEntries,
-            weekTotalsCost: weekTotals.cost,
-            weeklyBudget: weeklyBudget,
-            now: Date()
-        )
     }
 
     public var menuBarLabel: String {
