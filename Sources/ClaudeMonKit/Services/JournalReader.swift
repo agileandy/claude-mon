@@ -60,24 +60,136 @@ actor JournalReader {
         }
     }
 
-    /// One-shot computation: parse all journals, build blocks + aggregates. Runs on this actor, off main.
+    /// Refresh entrypoint: read any new journal bytes and return a fully-aggregated
+    /// bundle. AppState never sees raw `[UsageEntry]` — the array stays on this actor.
+    func loadAndBundle(
+        since startDate: Date,
+        filter: String?,
+        weeklyBudget: Double,
+        now: Date = Date()
+    ) throws -> RefreshBundle {
+        try loadIncremental(since: startDate)
+        return computeBundle(filter: filter, weeklyBudget: weeklyBudget, now: now)
+    }
+
+    /// Filter-only re-bundle: when the user toggles `selectedProjectFilter` we need
+    /// fresh filter-aware aggregates without re-reading any files.
+    func rebundle(
+        filter: String?,
+        weeklyBudget: Double,
+        now: Date = Date()
+    ) -> RefreshBundle {
+        return computeBundle(filter: filter, weeklyBudget: weeklyBudget, now: now)
+    }
+
+    /// Existing test-only entry point — preserved so the suite keeps compiling and
+    /// keeps validating the parse/dedup contract. Production code uses
+    /// `loadAndBundle` / `rebundle`.
+    func loadEntries(since startDate: Date) throws -> [UsageEntry] {
+        try loadIncremental(since: startDate)
+        return entries
+    }
+
+    /// Existing test-only entry point — same shape as the pre-Branch-5 bundle so the
+    /// `loadBundle_aggregatesAcrossProjects` fixture test keeps working unchanged.
     func loadBundle(since startDate: Date, now: Date = Date()) throws -> RefreshBundle {
-        let entries = try loadEntries(since: startDate)
+        return try loadAndBundle(since: startDate, filter: nil, weeklyBudget: 0, now: now)
+    }
+
+    // MARK: - Bundle assembly
+
+    private func computeBundle(filter: String?, weeklyBudget: Double, now: Date) -> RefreshBundle {
         let blocks = SessionAnalyzer.analyze(entries: entries, now: now)
+        let activeBlock = SessionAnalyzer.activeBlock(in: blocks)
+
+        // Global aggregates — used by the budget UI and by callers that want the
+        // unfiltered picture.
+        let todayG    = UsageAggregator.today(from: entries, now: now)
+        let weekG     = UsageAggregator.thisWeek(from: entries, now: now)
+        let prevWeekG = UsageAggregator.previousWeek(from: entries, now: now)
+        let lifetimeG = UsageAggregator.lifetime(from: entries)
+        let dailyG    = UsageAggregator.last7Days(from: entries, now: now)
+        let projects  = UsageAggregator.byProject(from: entries, now: now)
+
+        // Filter-aware aggregates — when no filter is active these alias the global
+        // values, otherwise they're derived from the scoped subset.
+        let scoped: [UsageEntry]
+        let displayedToday: PeriodTotals
+        let displayedWeek: PeriodTotals
+        let displayedPrevWeek: PeriodTotals
+        let displayedLifetime: PeriodTotals
+        let displayedDaily: [DailyAggregate]
+        let displayedBlocks: [SessionBlock]
+        if let dir = filter {
+            scoped = entries.filter { $0.projectDir == dir }
+            displayedToday    = UsageAggregator.today(from: scoped, now: now)
+            displayedWeek     = UsageAggregator.thisWeek(from: scoped, now: now)
+            displayedPrevWeek = UsageAggregator.previousWeek(from: scoped, now: now)
+            displayedLifetime = UsageAggregator.lifetime(from: scoped)
+            displayedDaily    = UsageAggregator.last7Days(from: scoped, now: now)
+            displayedBlocks   = SessionAnalyzer.analyze(entries: scoped, now: now)
+        } else {
+            scoped = entries
+            displayedToday    = todayG
+            displayedWeek     = weekG
+            displayedPrevWeek = prevWeekG
+            displayedLifetime = lifetimeG
+            displayedDaily    = dailyG
+            displayedBlocks   = blocks
+        }
+
+        let timeline = UsageAggregator.aggregatedTimeline(from: scoped, now: now)
+
+        // Forecast is intentionally global — the forecast UI is hidden when a
+        // filter is set, so always feeding the unfiltered series keeps the
+        // computation cheap and consistent.
+        let forecast = WeeklyForecast.compute(
+            entries: entries,
+            weekTotalsCost: weekG.cost,
+            weeklyBudget: weeklyBudget,
+            now: now
+        )
+
+        // Spike detector buckets: last hour, clamped to the active block start so
+        // we don't compare apples to oranges across a 5h window boundary.
+        let recent: [BurnRateEstimator.Bucket]
+        if let block = activeBlock {
+            let hourAgo = now.addingTimeInterval(-3600)
+            let bucketStart = max(block.startTime, hourAgo)
+            let recentEntries = entries.filter {
+                $0.timestamp >= bucketStart && $0.timestamp < now
+            }
+            recent = BurnRateEstimator.bucketize(entries: recentEntries, from: bucketStart, to: now)
+        } else {
+            recent = []
+        }
+
         return RefreshBundle(
             entries: entries,
             blocks: blocks,
-            activeBlock: SessionAnalyzer.activeBlock(in: blocks),
-            dailyHistory: UsageAggregator.last7Days(from: entries),
-            today: UsageAggregator.today(from: entries),
-            week: UsageAggregator.thisWeek(from: entries),
-            prevWeek: UsageAggregator.previousWeek(from: entries),
-            lifetime: UsageAggregator.lifetime(from: entries),
-            projects: UsageAggregator.byProject(from: entries, now: now)
+            activeBlock: activeBlock,
+            dailyHistory: dailyG,
+            today: todayG,
+            week: weekG,
+            prevWeek: prevWeekG,
+            lifetime: lifetimeG,
+            projects: projects,
+            displayedToday: displayedToday,
+            displayedWeek: displayedWeek,
+            displayedPrevWeek: displayedPrevWeek,
+            displayedLifetime: displayedLifetime,
+            displayedDailyHistory: displayedDaily,
+            displayedSessionBlocks: displayedBlocks,
+            timelineBuckets: timeline,
+            weeklyForecast: forecast,
+            recentBurnBuckets: recent
         )
     }
 
-    func loadEntries(since startDate: Date) throws -> [UsageEntry] {
+    /// Read any new bytes appended since the last call. Maintains the per-file
+    /// cursor cache and the global entries/seenIds accumulators. Pure I/O —
+    /// callers that want aggregates use `loadAndBundle` / `rebundle`.
+    private func loadIncremental(since startDate: Date) throws {
         let fm = FileManager.default
         guard fm.fileExists(atPath: projectsURL.path) else {
             throw ReadError.projectsDirNotFound
@@ -141,7 +253,6 @@ actor JournalReader {
         if addedAny {
             entries.sort { $0.timestamp < $1.timestamp }
         }
-        return entries
     }
 
     // MARK: - Private
@@ -317,8 +428,14 @@ enum ReadError: LocalizedError {
 }
 
 struct RefreshBundle: Sendable {
+    // Test-friendly: the test suite asserts on `entries` / `blocks` directly. In
+    // production these are fed straight into the actor's display pipeline and the
+    // MainActor never reads them.
     let entries: [UsageEntry]
     let blocks: [SessionBlock]
+
+    // Global aggregates (independent of project filter). Used by the budget UI
+    // which always shows the unfiltered weekly cost.
     let activeBlock: SessionBlock?
     let dailyHistory: [DailyAggregate]
     let today: PeriodTotals
@@ -326,4 +443,19 @@ struct RefreshBundle: Sendable {
     let prevWeek: PeriodTotals
     let lifetime: PeriodTotals
     let projects: [ProjectAggregate]
+
+    // Filter-aware aggregates. When no filter is active these alias the global
+    // values; under a filter they reflect only the scoped project's entries.
+    let displayedToday: PeriodTotals
+    let displayedWeek: PeriodTotals
+    let displayedPrevWeek: PeriodTotals
+    let displayedLifetime: PeriodTotals
+    let displayedDailyHistory: [DailyAggregate]
+    let displayedSessionBlocks: [SessionBlock]
+    let timelineBuckets: [TimeBucket]
+
+    // Cross-cutting derived values, always global (forecast UI hides under a
+    // filter; the spike detector watches the active block which is global too).
+    let weeklyForecast: WeeklyForecast
+    let recentBurnBuckets: [BurnRateEstimator.Bucket]
 }

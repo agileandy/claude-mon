@@ -7,26 +7,26 @@ import UserNotifications
 @Observable
 public final class AppState {
     // MARK: - Data
+    //
+    // The raw [UsageEntry] / [SessionBlock] arrays live on the JournalReader
+    // actor — MainActor only sees aggregates. Every property below is populated
+    // from a `RefreshBundle` produced by the actor.
 
-    var allEntries: [UsageEntry] = []
-    var sessionBlocks: [SessionBlock] = []
     var activeBlock: SessionBlock?
-    var dailyHistory: [DailyAggregate] = []  // last 7 days
 
+    /// Global aggregates (independent of project filter). Used by the budget UI
+    /// which always shows the unfiltered weekly cost.
     var todayTotals: PeriodTotals    = PeriodTotals()
     var weekTotals: PeriodTotals     = PeriodTotals()   // rolling 7d ending now
     var prevWeekTotals: PeriodTotals = PeriodTotals()   // rolling 7d ending 7d ago
     var lifetimeTotals: PeriodTotals = PeriodTotals()
+    var dailyHistory: [DailyAggregate] = []             // last 7 days, global
 
     /// Per-project rollups over the rolling 7d window. Sorted by week cost desc.
     /// Drives the Projects tab and the header filter dropdown.
     var projectTotals: [ProjectAggregate] = []
 
-    // MARK: - Cached derived views (recomputed on refresh + filter change)
-
-    /// Entries scoped to `selectedProjectFilter`. Equals `allEntries` when no filter
-    /// is set. Recomputed on refresh and on filter change so SwiftUI reads are O(1).
-    var filteredEntries: [UsageEntry] = []
+    // MARK: - Filter-aware aggregates (alias the global values when no filter is set)
 
     var displayedTodayTotals: PeriodTotals    = PeriodTotals()
     var displayedWeekTotals: PeriodTotals     = PeriodTotals()
@@ -39,12 +39,16 @@ public final class AppState {
     var timelineBuckets: [TimeBucket] = []
 
     /// Multi-day forecast for the user's weekly budget. Always derived from the
-    /// global `allEntries` (forecast intentionally ignores the project filter).
+    /// global entry series (forecast intentionally ignores the project filter).
     var weeklyForecast: WeeklyForecast = WeeklyForecast(
         outcome: .unavailable,
         dailyCostMedian: 0,
         confidence: .low
     )
+
+    /// Last-hour 5-minute buckets for the spike detector. Populated by the
+    /// reader actor so the spike check is a property read on MainActor.
+    var recentBurnBuckets: [BurnRateEstimator.Bucket] = []
 
     /// Currently-selected project filter (the raw `projectDir` key), or `nil` for "all".
     /// Affects period totals (today/week/prev/lifetime) and history. Block-level rate-limit
@@ -58,7 +62,9 @@ public final class AppState {
             } else {
                 UserDefaults.standard.set(selectedProjectFilter, forKey: "selectedProjectFilter")
             }
-            recomputeDerived()
+            // Filter-only re-bundle — no I/O, just recompute the filter-aware
+            // aggregates from the entries already cached on the reader actor.
+            Task { [weak self] in await self?.reapplyFilter() }
         }
     }
 
@@ -259,28 +265,58 @@ public final class AppState {
 
         do {
             // All parsing + aggregation runs on the JournalReader actor, not on MainActor.
-            async let bundleTask = reader.loadBundle(since: usageStartDate)
-            async let liveTask   = liveStore.load()
+            async let bundleTask = reader.loadAndBundle(
+                since: usageStartDate,
+                filter: selectedProjectFilter,
+                weeklyBudget: weeklyBudget,
+                now: Date()
+            )
+            async let liveTask = liveStore.load()
 
             let bundle = try await bundleTask
-            liveRateLimit   = await liveTask
+            liveRateLimit  = await liveTask
+            applyBundle(bundle)
+            lastError = nil
 
-            allEntries      = bundle.entries
-            sessionBlocks   = bundle.blocks
-            activeBlock     = bundle.activeBlock
-            dailyHistory    = bundle.dailyHistory
-            todayTotals     = bundle.today
-            weekTotals      = bundle.week
-            prevWeekTotals  = bundle.prevWeek
-            lifetimeTotals  = bundle.lifetime
-            projectTotals   = bundle.projects
-            lastError       = nil
-
-            recomputeDerived()
             await evaluateAndFireAlerts()
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Re-aggregate from the reader's cached entries with the current filter — no
+    /// I/O. Triggered by `selectedProjectFilter.didSet`.
+    private func reapplyFilter() async {
+        let bundle = await reader.rebundle(
+            filter: selectedProjectFilter,
+            weeklyBudget: weeklyBudget,
+            now: Date()
+        )
+        applyBundle(bundle)
+    }
+
+    /// Single point of truth for translating a `RefreshBundle` into observable
+    /// state. Splitting this out keeps the refresh() and reapplyFilter() paths
+    /// from drifting.
+    private func applyBundle(_ bundle: RefreshBundle) {
+        activeBlock              = bundle.activeBlock
+        todayTotals              = bundle.today
+        weekTotals               = bundle.week
+        prevWeekTotals           = bundle.prevWeek
+        lifetimeTotals           = bundle.lifetime
+        dailyHistory             = bundle.dailyHistory
+        projectTotals            = bundle.projects
+
+        displayedTodayTotals     = bundle.displayedToday
+        displayedWeekTotals      = bundle.displayedWeek
+        displayedPrevWeekTotals  = bundle.displayedPrevWeek
+        displayedLifetimeTotals  = bundle.displayedLifetime
+        displayedDailyHistory    = bundle.displayedDailyHistory
+        displayedSessionBlocks   = bundle.displayedSessionBlocks
+        timelineBuckets          = bundle.timelineBuckets
+
+        weeklyForecast           = bundle.weeklyForecast
+        recentBurnBuckets        = bundle.recentBurnBuckets
     }
 
     // MARK: - Alert evaluation (WS-2.2)
@@ -302,8 +338,9 @@ public final class AppState {
     }
 
     /// Builds the per-refresh value snapshot consumed by AlertCoordinator. Stays in
-    /// AppState because it pulls together state owned here (activeBlock, allEntries,
-    /// settings, today/dailyHistory).
+    /// AppState because it pulls together state owned here (activeBlock,
+    /// settings, today/dailyHistory). The spike-detector buckets are precomputed
+    /// on the reader actor and shipped via `recentBurnBuckets`.
     private func alertSnapshot() -> AlertCoordinator.Snapshot {
         let sourceForAlerts: AlertCenter.Input.RateLimitSource =
             blockRateLimitSource == .live ? .live : .estimate
@@ -312,7 +349,7 @@ public final class AppState {
             blockStartTime: activeBlock?.startTime,
             blockRateLimitPercent: blockRateLimitPercent,
             rateLimitSource: sourceForAlerts,
-            recentBurnBuckets: recentBurnBucketsForSpike(),
+            recentBurnBuckets: recentBurnBuckets,
             alertsEnabled: alertsEnabled,
             onlyAlertOnLiveData: onlyAlertOnLiveData,
             digest: digestContext(),
@@ -370,19 +407,6 @@ public final class AppState {
         )
     }
 
-    /// Last hour of 5-min buckets within the active block, used by the spike detector.
-    /// Empty when there's no active block or the block is younger than one complete bucket.
-    private func recentBurnBucketsForSpike() -> [BurnRateEstimator.Bucket] {
-        guard let block = activeBlock else { return [] }
-        let now = Date()
-        let hourAgo = now.addingTimeInterval(-3600)
-        let bucketStart = max(block.startTime, hourAgo)
-        let entries = allEntries.filter {
-            $0.timestamp >= bucketStart && $0.timestamp < now
-        }
-        return BurnRateEstimator.bucketize(entries: entries, from: bucketStart, to: now)
-    }
-
     // MARK: - Derived helpers
 
     // MARK: - Filtered views (WS-3)
@@ -394,39 +418,6 @@ public final class AppState {
             ?? ProjectName.decode(dirName: dir).display
     }
 
-    /// Recompute every cache that depends on `allEntries` and/or `selectedProjectFilter`.
-    /// Called once after each refresh and once whenever the user toggles the filter.
-    /// Replaces the previous "computed-on-every-access" pattern that re-derived
-    /// timeline buckets, weekly forecast, and session blocks on every SwiftUI render.
-    private func recomputeDerived() {
-        if let dir = selectedProjectFilter {
-            let scoped = allEntries.filter { $0.projectDir == dir }
-            filteredEntries          = scoped
-            displayedTodayTotals     = UsageAggregator.today(from: scoped)
-            displayedWeekTotals      = UsageAggregator.thisWeek(from: scoped)
-            displayedPrevWeekTotals  = UsageAggregator.previousWeek(from: scoped)
-            displayedLifetimeTotals  = UsageAggregator.lifetime(from: scoped)
-            displayedDailyHistory    = UsageAggregator.last7Days(from: scoped)
-            displayedSessionBlocks   = SessionAnalyzer.analyze(entries: scoped)
-            timelineBuckets          = UsageAggregator.aggregatedTimeline(from: scoped)
-        } else {
-            filteredEntries          = allEntries
-            displayedTodayTotals     = todayTotals
-            displayedWeekTotals      = weekTotals
-            displayedPrevWeekTotals  = prevWeekTotals
-            displayedLifetimeTotals  = lifetimeTotals
-            displayedDailyHistory    = dailyHistory
-            displayedSessionBlocks   = sessionBlocks
-            timelineBuckets          = UsageAggregator.aggregatedTimeline(from: allEntries)
-        }
-        // Forecast is always global — the forecast UI is hidden when a filter is set.
-        weeklyForecast = WeeklyForecast.compute(
-            entries: allEntries,
-            weekTotalsCost: weekTotals.cost,
-            weeklyBudget: weeklyBudget,
-            now: Date()
-        )
-    }
 
     var blockCostPercent: Double {
         guard let block = activeBlock, effectiveCostPerBlock > 0 else { return 0 }
