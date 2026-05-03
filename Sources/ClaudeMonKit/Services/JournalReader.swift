@@ -24,6 +24,31 @@ actor JournalReader {
     /// through to the `raw.type == "assistant"` check below — correct, just slower.
     private static let assistantMarker = "\"type\":\"assistant\""
 
+    // MARK: - Incremental state
+
+    /// Per-file read cursor. Persists across `loadEntries` calls so subsequent
+    /// refreshes only read appended bytes instead of re-slurping the whole file.
+    private struct FileCursor {
+        var modDate: Date
+        var byteOffset: UInt64
+    }
+
+    private var cursors: [URL: FileCursor] = [:]
+
+    /// Accumulated assistant entries across all refreshes since the last
+    /// `lastStartDate` reset. Sorted by timestamp ascending.
+    private var entries: [UsageEntry] = []
+
+    /// Global dedup of message IDs we've already accepted. The journal layout
+    /// occasionally writes the same `message.id` to two project dirs (e.g. resumed
+    /// sessions); first-wins matches the pre-incremental behaviour.
+    private var seenIds: Set<String> = []
+
+    /// The `since` argument from the most recent call. If the user moves the
+    /// "Usage Start Date" backward, every cursor is invalidated and we full-reload
+    /// — incremental can't conjure entries we previously dropped.
+    private var lastStartDate: Date?
+
     /// Default points at `~/.claude/projects`. Tests inject a fixture URL; production
     /// code calls the no-arg form unchanged.
     init(projectsURL: URL? = nil) {
@@ -58,9 +83,17 @@ actor JournalReader {
             throw ReadError.projectsDirNotFound
         }
 
-        let jsonlFiles = try findJSONLFiles(since: startDate)
-        var seen = Set<String>()
-        var entries: [UsageEntry] = []
+        // Start-date moved → invalidate everything. Easier and correct than trying
+        // to retroactively splice older entries back into the cache.
+        if lastStartDate != startDate {
+            cursors.removeAll(keepingCapacity: true)
+            entries.removeAll(keepingCapacity: true)
+            seenIds.removeAll(keepingCapacity: true)
+            lastStartDate = startDate
+        }
+
+        let jsonlFiles = try findJSONLFiles()
+        var addedAny = false
 
         for fileURL in jsonlFiles {
             // Journal layout: `~/.claude/projects/<munged-project-dir>/<session>.jsonl`.
@@ -68,36 +101,137 @@ actor JournalReader {
             // entry from that file with it.
             let projectDir = fileURL.deletingLastPathComponent().lastPathComponent
 
-            guard let data = fm.contents(atPath: fileURL.path),
-                  let text = String(data: data, encoding: .utf8) else { continue }
+            guard let mtime = modificationDate(of: fileURL) else { continue }
 
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                guard line.contains(Self.assistantMarker),
-                      let lineData = line.data(using: .utf8),
-                      let raw = try? decoder.decode(RawLine.self, from: lineData),
-                      raw.type == "assistant",
-                      let usage = raw.message?.usage,
-                      let msgId = raw.message?.id,
-                      !msgId.isEmpty,
-                      !seen.contains(msgId) else { continue }
+            var cursor = cursors[fileURL]
 
-                seen.insert(msgId)
+            if let existing = cursor {
+                // Skip files we've fully consumed and that haven't changed since.
+                if mtime <= existing.modDate { continue }
+            } else {
+                // Never seen this file before. Skip cheaply if its entire history
+                // predates `startDate` — those entries would be filtered out anyway.
+                if mtime < startDate { continue }
+                cursor = FileCursor(modDate: .distantPast, byteOffset: 0)
+            }
 
-                guard let entry = makeEntry(
-                    raw: raw,
-                    msgId: msgId,
-                    usage: usage,
+            guard var c = cursor else { continue }
+
+            do {
+                let (newEntries, advancedTo) = try readNew(
+                    file: fileURL,
+                    fromOffset: c.byteOffset,
                     projectDir: projectDir,
                     startDate: startDate
-                ) else { continue }
-                entries.append(entry)
+                )
+                if !newEntries.isEmpty {
+                    entries.append(contentsOf: newEntries)
+                    addedAny = true
+                }
+                c.byteOffset = advancedTo
+                c.modDate = mtime
+                cursors[fileURL] = c
+            } catch {
+                // One bad file shouldn't poison the whole refresh. Drop the cursor
+                // so the next pass retries from scratch on this file.
+                cursors[fileURL] = nil
             }
         }
 
-        return entries.sorted { $0.timestamp < $1.timestamp }
+        if addedAny {
+            entries.sort { $0.timestamp < $1.timestamp }
+        }
+        return entries
     }
 
     // MARK: - Private
+
+    /// Read appended bytes from `offset` to end-of-file, parse assistant lines, and
+    /// return both the new entries and the byte offset to record as the next
+    /// cursor. The cursor only advances to the last `\n` boundary so a partial
+    /// trailing line gets re-read on the next refresh once it's complete.
+    private func readNew(
+        file fileURL: URL,
+        fromOffset offset: UInt64,
+        projectDir: String,
+        startDate: Date
+    ) throws -> ([UsageEntry], UInt64) {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        // File may have been truncated/rewritten — clamp seek to end-of-file. If
+        // size shrank below our cursor, re-read from 0.
+        let fileSize = (try handle.seekToEnd())
+        try handle.seek(toOffset: 0)
+        let startAt: UInt64 = (offset > fileSize) ? 0 : offset
+        try handle.seek(toOffset: startAt)
+
+        guard let data = try handle.readToEnd(), !data.isEmpty else {
+            return ([], startAt)
+        }
+
+        // Find the last newline so we don't process a partial trailing line.
+        guard let lastNewlineIdx = data.lastIndex(of: UInt8(ascii: "\n")) else {
+            // No newline yet — leave cursor where it was, wait for more bytes.
+            return ([], startAt)
+        }
+        let processable = data.prefix(through: lastNewlineIdx)
+        let advanceBy = UInt64(processable.count)
+
+        var newEntries: [UsageEntry] = []
+        // Iterate by splitting on \n. Substring slicing on Data is cheap (no copy).
+        var lineStart = processable.startIndex
+        let end = processable.endIndex
+        while lineStart < end {
+            let lineEnd = processable[lineStart..<end].firstIndex(of: UInt8(ascii: "\n")) ?? end
+            let lineRange = lineStart..<lineEnd
+            if lineEnd > lineStart {
+                let lineData = processable[lineRange]
+                if let entry = parseAssistantLine(
+                    data: lineData,
+                    projectDir: projectDir,
+                    startDate: startDate
+                ) {
+                    newEntries.append(entry)
+                }
+            }
+            lineStart = lineEnd < end ? processable.index(after: lineEnd) : end
+        }
+
+        return (newEntries, startAt + advanceBy)
+    }
+
+    /// Parse a single JSONL line into a UsageEntry, applying the same prefilter +
+    /// dedup semantics as the original loader. Returns nil for any line that isn't
+    /// a fresh assistant message we want to keep.
+    private func parseAssistantLine(
+        data: Data,
+        projectDir: String,
+        startDate: Date
+    ) -> UsageEntry? {
+        // Cheap byte-wise prefilter — most journal lines aren't assistant.
+        guard data.range(of: Self.assistantMarkerData) != nil else { return nil }
+
+        guard let raw = try? decoder.decode(RawLine.self, from: data),
+              raw.type == "assistant",
+              let usage = raw.message?.usage,
+              let msgId = raw.message?.id,
+              !msgId.isEmpty,
+              !seenIds.contains(msgId) else { return nil }
+
+        guard let entry = makeEntry(
+            raw: raw,
+            msgId: msgId,
+            usage: usage,
+            projectDir: projectDir,
+            startDate: startDate
+        ) else { return nil }
+
+        seenIds.insert(msgId)
+        return entry
+    }
+
+    private static let assistantMarkerData: Data = Data(assistantMarker.utf8)
 
     /// Maps a parsed JSONL line plus its file's project context into a UsageEntry.
     /// Returns nil when the timestamp is unparseable or older than `startDate` —
@@ -124,11 +258,11 @@ actor JournalReader {
         )
     }
 
-    private func findJSONLFiles(since startDate: Date) throws -> [URL] {
+    private func findJSONLFiles() throws -> [URL] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: projectsURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
@@ -138,6 +272,10 @@ actor JournalReader {
             result.append(url)
         }
         return result
+    }
+
+    private func modificationDate(of url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
     private func parseDate(_ raw: String) -> Date? {
