@@ -36,7 +36,34 @@ func runBurnRateEstimatorSuite(_ r: Runner) {
         let est = BurnRateEstimator.estimate(buckets: buckets, bucketSizeSeconds: 300)
         // Median bucket cost is 0.10 → $1.20/h. Mean would be ~$22/h — reject that.
         try expect(est.costPerHour < 5.0, "median-based estimate should reject the spike, got \(est.costPerHour)")
-        try expectEqual(est.confidence, .low)  // high variance → low confidence
+        // MAD/median ignores the outlier — five steady $0.10 buckets vs one $10 spike means
+        // the consensus is steady, so confidence is high. The whole point of robust dispersion.
+        try expectEqual(est.confidence, .high)
+    }
+
+    r.test("estimate_burstyCodingPattern_confidenceIsNotLow") {
+        // Real-world coding: 24 buckets across 2h, alternating active/idle. Half are idle ($0),
+        // half are active at $0.20. Under CV this lands at low (CV ≈ 1.0); under MAD/median it
+        // should be medium or high because active intensity is consistent.
+        var buckets: [BurnRateEstimator.Bucket] = []
+        for i in 0..<24 {
+            let cost = i.isMultiple(of: 2) ? 0.20 : 0.0
+            buckets.append(BurnRateEstimator.Bucket(cost: cost, tokens: Int(cost * 10_000)))
+        }
+        let est = BurnRateEstimator.estimate(buckets: buckets, bucketSizeSeconds: 300)
+        try expect(est.confidence != .low,
+                   "bursty-but-steady coding pattern should not be flagged low, got \(est.confidence)")
+    }
+
+    r.test("estimate_mostlyIdle_confidenceIsLow") {
+        // >50% zero buckets → median is zero → no central tendency to project from.
+        var buckets: [BurnRateEstimator.Bucket] = Array(
+            repeating: BurnRateEstimator.Bucket(cost: 0.0, tokens: 0), count: 8
+        )
+        buckets.append(BurnRateEstimator.Bucket(cost: 0.50, tokens: 5_000))
+        buckets.append(BurnRateEstimator.Bucket(cost: 0.50, tokens: 5_000))
+        let est = BurnRateEstimator.estimate(buckets: buckets, bucketSizeSeconds: 300)
+        try expectEqual(est.confidence, .low)
     }
 
     r.test("estimate_mildVariance_confidenceIsMedium") {

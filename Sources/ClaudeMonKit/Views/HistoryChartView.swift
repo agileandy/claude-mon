@@ -6,19 +6,19 @@ struct HistoryChartView: View {
 
     private var mode: HistoryGraphMode { state.historyGraphMode }
 
-    private var blocks: [SessionBlock] {
-        Array(state.displayedSessionBlocks.suffix(20))
+    private var buckets: [TimeBucket] {
+        state.timelineBuckets
     }
 
-    private func value(_ block: SessionBlock) -> Double {
+    private func value(_ bucket: TimeBucket) -> Double {
         switch mode {
-        case .cost:   return block.totalCost
-        case .tokens: return Double(block.totalTokens)
+        case .cost:   return bucket.totalCost
+        case .tokens: return Double(bucket.totalTokens)
         }
     }
 
     private var maxValue: Double {
-        blocks.map(value).max() ?? 1
+        buckets.map(value).max() ?? 1
     }
 
     private var yAxisLabel: String {
@@ -30,23 +30,35 @@ struct HistoryChartView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Recent 5h blocks · \(mode.rawValue)")
-                .font(.caption)
+            HStack {
+                Text("Activity · daily → yearly · \(mode.rawValue)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    HistoryWindowController.shared.show(with: state)
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
+                .help("Open detailed history window")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
 
-            if blocks.isEmpty {
+            if buckets.isEmpty || buckets.allSatisfy({ value($0) == 0 }) {
                 emptyChart
             } else {
-                Chart(blocks) { block in
+                Chart(buckets) { bucket in
                     BarMark(
-                        x: .value("Block", block.startTime, unit: .hour),
-                        y: .value(yAxisLabel, value(block)),
-                        width: .ratio(0.6)
+                        x: .value("Bucket", bucket.label),
+                        y: .value(yAxisLabel, value(bucket)),
+                        width: .ratio(0.7)
                     )
-                    .foregroundStyle(barColor(value(block)))
-                    .cornerRadius(3)
+                    .foregroundStyle(barColor(bucket))
+                    .cornerRadius(2)
                 }
                 .chartYAxis {
                     AxisMarks(values: .automatic(desiredCount: 4)) { v in
@@ -59,30 +71,79 @@ struct HistoryChartView: View {
                     }
                 }
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 5)) { v in
-                        AxisValueLabel(format: .dateTime.weekday(.abbreviated).hour(.defaultDigits(amPM: .omitted)))
+                    AxisMarks(preset: .aligned, values: .automatic(desiredCount: 8)) { _ in
+                        AxisValueLabel().font(.system(size: 8))
                     }
                 }
                 .frame(height: 140)
                 .padding(.horizontal, 12)
+
+                granularityLegend
+                    .padding(.horizontal, 12)
             }
 
             Divider()
         }
     }
 
+    private var granularityLegend: some View {
+        HStack(spacing: 12) {
+            ForEach(activeGranularities, id: \.self) { g in
+                HStack(spacing: 3) {
+                    Text(g.letter)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(legendColor(g))
+                    Text(legendName(g))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer()
+        }
+    }
+
+    private var activeGranularities: [TimeBucket.Granularity] {
+        var seen = Set<TimeBucket.Granularity>()
+        var ordered: [TimeBucket.Granularity] = []
+        for g in [TimeBucket.Granularity.year, .month, .week, .day] where buckets.contains(where: { $0.granularity == g }) {
+            if seen.insert(g).inserted { ordered.append(g) }
+        }
+        return ordered
+    }
+
+    private func legendName(_ g: TimeBucket.Granularity) -> String {
+        switch g {
+        case .day:   return "day"
+        case .week:  return "week"
+        case .month: return "month"
+        case .year:  return "year"
+        }
+    }
+
     private var emptyChart: some View {
-        Text("No session blocks yet")
+        Text("No usage in the last year")
             .font(.caption)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, minHeight: 120)
     }
 
-    private func barColor(_ v: Double) -> Color {
+    private func barColor(_ bucket: TimeBucket) -> Color {
+        let v = value(bucket)
         let fraction = maxValue > 0 ? v / maxValue : 0
-        if fraction < 0.3 { return .blue.opacity(0.5) }
-        if fraction < 0.7 { return .blue }
-        return .purple
+        let base = legendColor(bucket.granularity)
+        if fraction < 0.3 { return base.opacity(0.5) }
+        if fraction < 0.7 { return base }
+        return base
+    }
+
+    private func legendColor(_ g: TimeBucket.Granularity) -> Color {
+        switch g {
+        case .day:   return .blue
+        case .week:  return .teal
+        case .month: return .indigo
+        case .year:  return .purple
+        }
     }
 
     private func formatShort(_ v: Double) -> String {

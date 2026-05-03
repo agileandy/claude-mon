@@ -92,6 +92,14 @@ struct ProjectRowView: View {
                             .fontWeight(.medium)
                             .lineLimit(1)
                     }
+                    if project.fullDisplay != project.displayName {
+                        Text(project.fullDisplay)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(project.fullDisplay)
+                    }
                     HStack(spacing: 6) {
                         if let model = project.modelBreakdown.first?.model {
                             Text(model)

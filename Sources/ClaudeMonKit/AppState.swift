@@ -16,14 +16,14 @@ public final class AppState {
     var todayTotals: PeriodTotals    = PeriodTotals()
     var weekTotals: PeriodTotals     = PeriodTotals()   // rolling 7d ending now
     var prevWeekTotals: PeriodTotals = PeriodTotals()   // rolling 7d ending 7d ago
-    var monthTotals: PeriodTotals    = PeriodTotals()
+    var lifetimeTotals: PeriodTotals = PeriodTotals()
 
     /// Per-project rollups over the rolling 7d window. Sorted by week cost desc.
     /// Drives the Projects tab and the header filter dropdown.
     var projectTotals: [ProjectAggregate] = []
 
     /// Currently-selected project filter (the raw `projectDir` key), or `nil` for "all".
-    /// Affects period totals (today/week/prev/month) and history. Block-level rate-limit
+    /// Affects period totals (today/week/prev/lifetime) and history. Block-level rate-limit
     /// stuff (activeBlock, blockRateLimitPercent, burn rate, projection) intentionally
     /// stays GLOBAL — Claude enforces rate limits across all projects, so filtering
     /// would mislead the user.
@@ -252,7 +252,7 @@ public final class AppState {
             todayTotals     = bundle.today
             weekTotals      = bundle.week
             prevWeekTotals  = bundle.prevWeek
-            monthTotals     = bundle.month
+            lifetimeTotals  = bundle.lifetime
             projectTotals   = bundle.projects
             lastError       = nil
 
@@ -389,8 +389,8 @@ public final class AppState {
     var displayedPrevWeekTotals: PeriodTotals {
         selectedProjectFilter == nil ? prevWeekTotals : UsageAggregator.previousWeek(from: filteredEntries)
     }
-    var displayedMonthTotals: PeriodTotals {
-        selectedProjectFilter == nil ? monthTotals : UsageAggregator.thisMonth(from: filteredEntries)
+    var displayedLifetimeTotals: PeriodTotals {
+        selectedProjectFilter == nil ? lifetimeTotals : UsageAggregator.lifetime(from: filteredEntries)
     }
     var displayedDailyHistory: [DailyAggregate] {
         selectedProjectFilter == nil ? dailyHistory : UsageAggregator.last7Days(from: filteredEntries)
@@ -401,6 +401,14 @@ public final class AppState {
     /// filtered project contributed messages to it.
     var displayedSessionBlocks: [SessionBlock] {
         selectedProjectFilter == nil ? sessionBlocks : SessionAnalyzer.analyze(entries: filteredEntries)
+    }
+
+    /// Log-scale timeline used by the History tab — day buckets for the last week,
+    /// weekly buckets for the prior month, monthly for the prior year, yearly older.
+    /// Re-derived from `filteredEntries` on each access so it reflects the active
+    /// project filter.
+    var timelineBuckets: [TimeBucket] {
+        UsageAggregator.aggregatedTimeline(from: filteredEntries)
     }
 
     var blockCostPercent: Double {
@@ -442,6 +450,20 @@ public final class AppState {
         }
         guard let block = activeBlock else { return nil }
         return block.startTime.addingTimeInterval(SessionAnalyzer.blockWindow)
+    }
+
+    /// Anthropic's server-side weekly (7-day) rate-limit percentage, when fresh live
+    /// data is available. Distinct from `weeklyBudgetPercent`, which tracks the user's
+    /// self-imposed cost budget. Nil when no fresh capture exists — there is no local
+    /// fallback for the weekly window (we don't track a weekly message counter).
+    var weeklyRateLimitPercent: Double? {
+        guard let live = liveRateLimit, live.freshness() == .fresh else { return nil }
+        return live.sevenDay.usedPercentage
+    }
+
+    var weeklyRateLimitResetsAt: Date? {
+        guard let live = liveRateLimit, live.freshness() == .fresh else { return nil }
+        return live.sevenDay.resetsAt
     }
 
     // MARK: - Predictions (current block, cost-based)

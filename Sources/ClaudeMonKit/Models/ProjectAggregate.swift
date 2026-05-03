@@ -10,6 +10,9 @@ struct ProjectAggregate: Identifiable, Sendable {
     var id: String { dir }
     let dir: String
     let displayName: String
+    /// Best-effort full path with `$HOME` collapsed to `~`. Always populated; falls
+    /// back to `displayName` when the dirName isn't a munged path (rare).
+    let fullDisplay: String
     let fullPath: String?
     let weekCost: Double
     let weekTokens: Int

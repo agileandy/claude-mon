@@ -36,7 +36,7 @@ actor JournalReader {
             today: UsageAggregator.today(from: entries),
             week: UsageAggregator.thisWeek(from: entries),
             prevWeek: UsageAggregator.previousWeek(from: entries),
-            month: UsageAggregator.thisMonth(from: entries),
+            lifetime: UsageAggregator.lifetime(from: entries),
             projects: UsageAggregator.byProject(from: entries, now: now)
         )
     }
@@ -174,6 +174,6 @@ struct RefreshBundle: Sendable {
     let today: PeriodTotals
     let week: PeriodTotals
     let prevWeek: PeriodTotals
-    let month: PeriodTotals
+    let lifetime: PeriodTotals
     let projects: [ProjectAggregate]
 }
