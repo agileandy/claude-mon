@@ -42,10 +42,12 @@ public struct MenuBarContentView: View {
             if state.isRefreshing {
                 ProgressView().scaleEffect(0.6)
             } else {
-                Text("next in " + formatCountdown(state.countdownSeconds))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("next in " + formatCountdown(remainingUntilNextRefresh(now: context.date)))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
             }
             Button {
                 state.isPinned.toggle()
@@ -139,6 +141,15 @@ public struct MenuBarContentView: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
+    }
+
+    /// Seconds until the next scheduled refresh, computed locally so the header's
+    /// countdown doesn't need a 500ms `@Observable` ticker on AppState. Falls back
+    /// to the full interval when no refresh has completed yet.
+    private func remainingUntilNextRefresh(now: Date) -> Double {
+        guard let last = state.lastRefreshed else { return state.refreshInterval }
+        let nextAt = last.addingTimeInterval(state.refreshInterval)
+        return max(0, nextAt.timeIntervalSince(now))
     }
 
     private func formatCountdown(_ seconds: Double) -> String {

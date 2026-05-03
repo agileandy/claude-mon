@@ -56,7 +56,6 @@ public final class AppState {
     var isRefreshing: Bool = false
     var lastRefreshed: Date?
     var lastError: String?
-    var countdownSeconds: Double = 0
     public var isPinned: Bool = false {
         didSet {
             guard oldValue != isPinned else { return }
@@ -218,11 +217,7 @@ public final class AppState {
             guard let self else { return }
             while !Task.isCancelled {
                 await self.refresh()
-                let deadline = Date().addingTimeInterval(self.refreshInterval)
-                while !Task.isCancelled, deadline.timeIntervalSinceNow > 0 {
-                    self.countdownSeconds = deadline.timeIntervalSinceNow
-                    try? await Task.sleep(for: .milliseconds(500))
-                }
+                try? await Task.sleep(for: .seconds(self.refreshInterval))
             }
         }
     }
