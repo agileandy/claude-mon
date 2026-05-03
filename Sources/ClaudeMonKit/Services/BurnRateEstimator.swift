@@ -92,20 +92,25 @@ static func bucketize(
         return (sorted[n / 2 - 1] + sorted[n / 2]) / 2
     }
 
-    /// Coefficient-of-variation based confidence.
+    /// Robust dispersion-based confidence: median absolute deviation over median (MAD/median).
+    /// CV (std/mean) is fooled by zero-inflated cost data — coding sessions are inherently bursty
+    /// (active bursts of API calls separated by quiet thinking/reading), and zero buckets blow up
+    /// CV even when the *active* pace is steady. MAD/median pairs naturally with the median-based
+    /// rate calculation and is robust against single-bucket spikes.
     /// - `<3` buckets → `.low` (not enough signal regardless of steadiness).
-    /// - mean near zero → `.low` (nothing to be confident about).
-    /// - CV < 0.15 → `.high`; < 0.50 → `.medium`; else `.low`.
+    /// - median == 0 (>50% idle) → `.low` (rate calc is also zero — no central tendency to project).
+    /// - MAD/median < 0.5 → `.high`; < 1.5 → `.medium`; else `.low`.
     private static func confidenceTier(for values: [Double]) -> Confidence {
         guard values.count >= 3 else { return .low }
-        let mean = values.reduce(0, +) / Double(values.count)
-        guard mean > 1e-6 else { return .low }
-        let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
-        let cv = variance.squareRoot() / mean
-        switch cv {
-        case ..<0.15: return .high
-        case ..<0.50: return .medium
-        default:      return .low
+        let med = median(of: values)
+        guard med > 1e-6 else { return .low }
+        let deviations = values.map { abs($0 - med) }
+        let mad = median(of: deviations)
+        let dispersion = mad / med
+        switch dispersion {
+        case ..<0.5: return .high
+        case ..<1.5: return .medium
+        default:     return .low
         }
     }
 }
