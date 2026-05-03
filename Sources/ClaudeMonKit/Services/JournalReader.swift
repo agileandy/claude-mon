@@ -13,6 +13,17 @@ actor JournalReader {
         return f
     }()
 
+    /// Single decoder reused for every line. JSONDecoder isn't `Sendable` but the
+    /// actor isolates it; hoisting saves an allocation per line (~146K/refresh in
+    /// production).
+    private let decoder = JSONDecoder()
+
+    /// Substring that must appear in any line we care about. Cheap byte-wise scan
+    /// rejects ~all `user`/`permission-mode`/etc. lines before we hand them to the
+    /// JSON parser. False positives (a content string containing the literal) fall
+    /// through to the `raw.type == "assistant"` check below — correct, just slower.
+    private static let assistantMarker = "\"type\":\"assistant\""
+
     /// Default points at `~/.claude/projects`. Tests inject a fixture URL; production
     /// code calls the no-arg form unchanged.
     init(projectsURL: URL? = nil) {
@@ -61,8 +72,9 @@ actor JournalReader {
                   let text = String(data: data, encoding: .utf8) else { continue }
 
             for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                guard let lineData = line.data(using: .utf8),
-                      let raw = try? JSONDecoder().decode(RawLine.self, from: lineData),
+                guard line.contains(Self.assistantMarker),
+                      let lineData = line.data(using: .utf8),
+                      let raw = try? decoder.decode(RawLine.self, from: lineData),
                       raw.type == "assistant",
                       let usage = raw.message?.usage,
                       let msgId = raw.message?.id,
