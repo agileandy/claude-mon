@@ -124,12 +124,20 @@ struct CurrentBlockView: View {
             predictionRow("Budget left",
                           value: formatCost(state.runwayRemainingCost))
 
-            if let hit = state.limitHitAt, state.limitHitBeforeBlockEnd {
-                predictionRow("Hits limit at",
-                              value: formatClock(hit) + "  (" + formatDuration(state.runwaySecondsAtBurn ?? 0) + ")")
-            } else if block.burnRateCostPerHour > 0 {
-                predictionRow("Hits limit at",
-                              value: "— stays under")
+            if let seconds = state.runwaySecondsAtBurn {
+                if seconds < 0 {
+                    // Already crossed the limit. Show how long ago at the current
+                    // burn rate, working backwards from now. Avoids the previous
+                    // bug where overrun + nil-runway fell into "stays under".
+                    predictionRow("Limit hit",
+                                  value: formatDuration(-seconds) + " ago")
+                } else if state.limitHitBeforeBlockEnd, let hit = state.limitHitAt {
+                    predictionRow("Hits limit at",
+                                  value: formatClock(hit) + "  (" + formatDuration(seconds) + ")")
+                } else if block.burnRateCostPerHour > 0 {
+                    predictionRow("Hits limit at",
+                                  value: "— stays under")
+                }
             }
 
             predictionRow("End-of-block",

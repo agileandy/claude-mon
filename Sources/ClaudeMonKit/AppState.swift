@@ -476,27 +476,36 @@ public final class AppState {
 
     // MARK: - Predictions (current block, cost-based)
 
-    /// Dollars remaining until the block cost limit.
+    /// Dollars remaining until the block cost limit. Clamped to 0 when over —
+    /// the "Budget left $0.00" UI is what's wanted in that case.
     var runwayRemainingCost: Double {
         guard let block = activeBlock else { return 0 }
         return max(0, effectiveCostPerBlock - block.totalCost)
     }
 
-    /// Seconds until the limit is hit at current burn rate; nil if no burn rate.
+    /// Signed seconds until the cost limit is hit at the current burn rate.
+    /// Positive = in the future, negative = already crossed (magnitude = how long
+    /// ago). Nil only when we genuinely can't project (no active block, no burn
+    /// rate, no limit). The view branches on the sign so it can render
+    /// "Hits limit at HH:MM" vs "Limit hit Xm ago" instead of falsely claiming
+    /// the user "stays under" after they've already blown through it.
     var runwaySecondsAtBurn: TimeInterval? {
         guard let block = activeBlock,
               block.burnRateCostPerHour > 0,
-              runwayRemainingCost > 0 else { return nil }
-        return runwayRemainingCost / block.burnRateCostPerHour * 3600
+              effectiveCostPerBlock > 0 else { return nil }
+        let remaining = effectiveCostPerBlock - block.totalCost
+        return remaining / block.burnRateCostPerHour * 3600
     }
 
-    /// Wall-clock timestamp when limit would be hit; nil if no projection.
+    /// Wall-clock timestamp when the limit was/will be hit. Past dates are
+    /// returned as-is — the view formats them as "X ago".
     var limitHitAt: Date? {
         guard let seconds = runwaySecondsAtBurn else { return nil }
         return Date().addingTimeInterval(seconds)
     }
 
-    /// True when the limit would be hit before the current 5h block closes.
+    /// True when the limit was/will be reached during the current 5h block.
+    /// Past hits (negative seconds) are always "before block end" by definition.
     var limitHitBeforeBlockEnd: Bool {
         guard let seconds = runwaySecondsAtBurn, let block = activeBlock else { return false }
         return seconds < block.remainingSeconds
