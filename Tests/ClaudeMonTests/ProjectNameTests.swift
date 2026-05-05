@@ -47,7 +47,7 @@ func runProjectNameSuite(_ r: Runner) {
     r.test("projectName_realFilesystem_decodesUsersHomeProject") {
         // Live check: a path everyone has — /Users/<whoever> — so this is portable
         // across machines without fixture setup.
-        let home = NSHomeDirectory()                            // e.g. /Users/<user>
+        let home = NSHomeDirectory()
         let parts = home.split(separator: "/").map(String.init)
         guard parts.count >= 2 else { return }                   // skip on weird envs
         // Build the munged form: leading "-" + parts joined by "-".

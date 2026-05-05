@@ -21,6 +21,10 @@ xcuserdata/
 # Local Claude Code settings (user-specific overrides)
 .claude/settings.local.json
 
+# Internal planning + retro notes — keep local, don't publish
+.claude/plans/
+data/
+
 # Logs & scratch
 *.log
 *.tmp
