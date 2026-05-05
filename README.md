@@ -1,4 +1,9 @@
-# claude-mon
+# Claude Code Monitor
+
+| Live gauge | Burn rate | Forecast |
+|---|---|---|
+| <img src="https://github.com/user-attachments/assets/46485ab5-9d98-4d4f-869b-7e4314273593" width="240"> | <img src="https://github.com/user-attachments/assets/0566ffd1-46f4-4fed-97ab-218e08ed215c" width="240"> | <img src="https://github.com/user-attachments/assets/65e3d30b-c0c8-4078-86b6-d1aec0cd47ab" width="240"> |
+
 
 A macOS menu-bar app that monitors Claude Code usage — live rate-limit gauge, per-block burn rate, weekly forecasts, proactive notifications, and per-project attribution.
 
